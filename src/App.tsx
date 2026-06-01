@@ -1,22 +1,52 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import {
   ArrowLeft,
+  Bell,
   CalendarDays,
   CircleUserRound,
   Home,
   LogOut,
-  Menu,
   Search
 } from "lucide-react";
-import { artists, musicNews } from "./data/mockData";
-import type { Artist, MusicNews } from "./types";
+import { searchTheAudioDbArtists } from "./api/theAudioDb";
+import { ARTIST_IMAGE_PLACEHOLDER } from "./constants";
+import { artists, createCalendarEvents, musicNews } from "./data/mockData";
+import {
+  getScheduledNotificationId,
+  readSentNotificationIds,
+  startNotificationScheduler
+} from "./utils/notificationScheduler";
+import type {
+  Artist,
+  CalendarEvent,
+  MusicNews,
+  NewsCategory,
+  NotificationSetting,
+  NotificationSettings,
+  RemindBefore
+} from "./types";
 
-const FOLLOW_STORAGE_KEY = "followedArtistIds";
+const FOLLOWED_ARTISTS_STORAGE_KEY = "followedArtists";
+const LEGACY_FOLLOW_STORAGE_KEY = "followedArtistIds";
+const NOTIFICATION_STORAGE_KEY = "notificationSettings";
+const LEGACY_NOTIFICATION_STORAGE_KEY = "notificationCalendarEventIds";
 const USER_STORAGE_KEY = "goyoUsers";
+const ARTIST_SEARCH_CACHE_STORAGE_KEY = "artistSearchCache";
+const MIN_REMOTE_SEARCH_LENGTH = 2;
 
-type Screen = "login" | "signup" | "home" | "calendar" | "profile" | "detail" | "eventDetail";
-type MainTab = "home" | "calendar";
+type Screen =
+  | "login"
+  | "signup"
+  | "home"
+  | "calendar"
+  | "notificationCenter"
+  | "artistDetail"
+  | "profile"
+  | "detail"
+  | "eventDetail";
+type MainTab = "home" | "calendar" | "notifications";
+type DetailBackScreen = "home" | "calendar" | "notificationCenter" | "artistDetail";
 type CalendarFilter = "today" | "week" | "month";
 type StoredUser = {
   name: string;
@@ -24,24 +54,150 @@ type StoredUser = {
   password: string;
 };
 
-function parseLocalDate(dateText: string) {
-  const [year, month, day] = dateText.split("-").map(Number);
-  return new Date(year, month - 1, day);
+const CATEGORY_LABELS: Record<NewsCategory, string> = {
+  CONCERT: "CONCERT",
+  FESTIVAL: "FESTIVAL",
+  NEW_SONG: "NEW SONG",
+  NEW_ALBUM: "NEW ALBUM"
+};
+
+const CALENDAR_EVENT_TYPE_LABELS: Record<CalendarEvent["type"], string> = {
+  EVENT: "일정",
+  TICKET_OPEN: "티켓오픈",
+  RELEASE: "발매"
+};
+
+const REMINDER_OPTIONS: Array<{ value: RemindBefore; label: string }> = [
+  { value: "AT_TIME", label: "정시" },
+  { value: "10_MIN", label: "10분 전" },
+  { value: "1_HOUR", label: "1시간 전" },
+  { value: "1_DAY", label: "하루 전" }
+];
+
+const calendarEvents = createCalendarEvents(musicNews);
+
+function getCategoryLabel(category: NewsCategory) {
+  return CATEGORY_LABELS[category];
+}
+
+function getCalendarEventTypeLabel(type: CalendarEvent["type"]) {
+  return CALENDAR_EVENT_TYPE_LABELS[type];
+}
+
+function getReminderLabel(remindBefore: RemindBefore) {
+  return REMINDER_OPTIONS.find((option) => option.value === remindBefore)?.label ?? "정시";
+}
+
+function isRemindBefore(value: unknown): value is RemindBefore {
+  return value === "AT_TIME" || value === "10_MIN" || value === "1_HOUR" || value === "1_DAY";
+}
+
+function parseLocalDate(dateText?: string) {
+  if (!dateText) {
+    return new Date(Number.NaN);
+  }
+
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+
+  return new Date(dateText);
+}
+
+function getDateTime(dateText?: string) {
+  const date = parseLocalDate(dateText);
+  const time = date.getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function formatKoreanDate(dateText: string) {
+  const date = parseLocalDate(dateText);
+  if (Number.isNaN(date.getTime())) {
+    return "일정 미정";
+  }
+
   return new Intl.DateTimeFormat("ko-KR", {
     month: "long",
     day: "numeric",
     weekday: "short"
-  }).format(parseLocalDate(dateText));
+  }).format(date);
 }
 
 function formatShortDate(dateText: string) {
+  const date = parseLocalDate(dateText);
+  if (Number.isNaN(date.getTime())) {
+    return "--.--";
+  }
+
   return new Intl.DateTimeFormat("ko-KR", {
     month: "2-digit",
     day: "2-digit"
-  }).format(parseLocalDate(dateText));
+  }).format(date);
+}
+
+function formatDateTime(dateText?: string) {
+  const date = parseLocalDate(dateText);
+  if (Number.isNaN(date.getTime())) {
+    return "일정 미정";
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function getNewsDateLabel(news: MusicNews) {
+  if (!news.eventDate) {
+    return "일정 미정";
+  }
+
+  return formatKoreanDate(news.eventDate);
+}
+
+function getNewsSortTime(news: MusicNews) {
+  return getDateTime(news.eventDate) || getDateTime(news.ticketOpenDate);
+}
+
+function getNewsHeroColor(news: MusicNews) {
+  const colors: Record<NewsCategory, string> = {
+    CONCERT: "#e8e8ec",
+    FESTIVAL: "#e9e9ee",
+    NEW_SONG: "#ececef",
+    NEW_ALBUM: "#eeeeee"
+  };
+
+  return colors[news.category];
+}
+
+function getNewsInfoRows(news: MusicNews) {
+  const rows: Array<{ label: string; value: string }> = [];
+
+  if (news.eventDate) {
+    rows.push({
+      label: news.category === "CONCERT" || news.category === "FESTIVAL" ? "일정" : "발매",
+      value: formatDateTime(news.eventDate)
+    });
+  }
+
+  if (news.ticketOpenDate) {
+    rows.push({ label: "티켓 오픈", value: formatDateTime(news.ticketOpenDate) });
+  }
+
+  if (news.ticketVendor) {
+    rows.push({ label: "예매처", value: news.ticketVendor });
+  }
+
+  if (news.venue) {
+    rows.push({ label: "장소", value: news.venue });
+  }
+
+  return rows.length > 0 ? rows : [{ label: "일정", value: "일정 미정" }];
 }
 
 function isSameDate(a: Date, b: Date) {
@@ -70,26 +226,242 @@ function isThisMonth(date: Date, today = new Date()) {
   return date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth();
 }
 
-function saveFollowedArtistIds(nextIds: string[]) {
-  window.localStorage.setItem(FOLLOW_STORAGE_KEY, JSON.stringify(nextIds));
+function isPastCalendarDate(dateText: string, today = new Date()) {
+  const eventDate = parseLocalDate(dateText);
+  if (Number.isNaN(eventDate.getTime())) {
+    return false;
+  }
+
+  const todayStart = new Date(today);
+  todayStart.setHours(0, 0, 0, 0);
+
+  return eventDate < todayStart;
 }
 
-function readFollowedArtistIds() {
-  try {
-    const stored = window.localStorage.getItem(FOLLOW_STORAGE_KEY);
-    if (!stored) {
-      return [];
+function isArtistSource(value: unknown): value is Artist["source"] {
+  return value === "MOCK" || value === "SPOTIFY" || value === "THEAUDIODB";
+}
+
+function isStoredArtist(value: unknown): value is Artist {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const artist = value as Record<string, unknown>;
+  return (
+    typeof artist.id === "string" &&
+    typeof artist.name === "string" &&
+    typeof artist.imageUrl === "string" &&
+    Array.isArray(artist.genres) &&
+    artist.genres.every((genre) => typeof genre === "string") &&
+    isArtistSource(artist.source) &&
+    (artist.description === undefined || typeof artist.description === "string") &&
+    (artist.externalUrl === undefined || typeof artist.externalUrl === "string") &&
+    (artist.spotifyId === undefined || typeof artist.spotifyId === "string")
+  );
+}
+
+function dedupeArtists(nextArtists: Artist[]) {
+  return Array.from(new Map(nextArtists.map((artist) => [artist.id, artist])).values());
+}
+
+function normalizeArtistSearchKey(query: string) {
+  return query.trim().toLowerCase();
+}
+
+function normalizeArtistName(name: string) {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function dedupeArtistsByName(nextArtists: Artist[]) {
+  const seenNames = new Set<string>();
+
+  return nextArtists.filter((artist) => {
+    const normalizedName = normalizeArtistName(artist.name);
+    if (!normalizedName || seenNames.has(normalizedName)) {
+      return false;
     }
 
-    const parsed = JSON.parse(stored);
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-      return Array.from(new Set(parsed));
+    seenNames.add(normalizedName);
+    return true;
+  });
+}
+
+function dedupeSearchArtistsByName(nextArtists: Artist[], followedArtistIds: string[]) {
+  const artistsByName = new Map<string, Artist>();
+
+  nextArtists.forEach((artist) => {
+    const normalizedName = normalizeArtistName(artist.name);
+    if (!normalizedName) {
+      return;
+    }
+
+    const existingArtist = artistsByName.get(normalizedName);
+    if (
+      !existingArtist ||
+      (!followedArtistIds.includes(existingArtist.id) && followedArtistIds.includes(artist.id))
+    ) {
+      artistsByName.set(normalizedName, artist);
+    }
+  });
+
+  return Array.from(artistsByName.values());
+}
+
+function saveFollowedArtists(nextArtists: Artist[]) {
+  window.localStorage.setItem(
+    FOLLOWED_ARTISTS_STORAGE_KEY,
+    JSON.stringify(dedupeArtists(nextArtists))
+  );
+  window.localStorage.removeItem(LEGACY_FOLLOW_STORAGE_KEY);
+}
+
+function readFollowedArtists() {
+  try {
+    const stored = window.localStorage.getItem(FOLLOWED_ARTISTS_STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        return dedupeArtists(parsed.filter(isStoredArtist));
+      }
+    }
+
+    const legacyStored = window.localStorage.getItem(LEGACY_FOLLOW_STORAGE_KEY);
+    if (legacyStored) {
+      const parsedLegacy = JSON.parse(legacyStored);
+      if (Array.isArray(parsedLegacy) && parsedLegacy.every((item) => typeof item === "string")) {
+        const migratedArtists = Array.from(new Set(parsedLegacy))
+          .map((artistId) => artists.find((artist) => artist.id === artistId))
+          .filter((artist): artist is Artist => Boolean(artist));
+
+        saveFollowedArtists(migratedArtists);
+        return migratedArtists;
+      }
     }
   } catch {
-    window.localStorage.removeItem(FOLLOW_STORAGE_KEY);
+    window.localStorage.removeItem(FOLLOWED_ARTISTS_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_FOLLOW_STORAGE_KEY);
   }
 
   return [];
+}
+
+function readArtistSearchCache() {
+  try {
+    const stored = window.localStorage.getItem(ARTIST_SEARCH_CACHE_STORAGE_KEY);
+    if (!stored) {
+      return {};
+    }
+
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.entries(parsed).reduce<Record<string, Artist[]>>((cache, [key, value]) => {
+      if (Array.isArray(value)) {
+        cache[key] = dedupeArtistsByName(value.filter(isStoredArtist));
+      }
+
+      return cache;
+    }, {});
+  } catch {
+    window.localStorage.removeItem(ARTIST_SEARCH_CACHE_STORAGE_KEY);
+  }
+
+  return {};
+}
+
+function saveArtistSearchCache(cache: Record<string, Artist[]>) {
+  window.localStorage.setItem(ARTIST_SEARCH_CACHE_STORAGE_KEY, JSON.stringify(cache));
+}
+
+function saveNotificationSettings(settings: NotificationSettings) {
+  window.localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify(settings));
+  window.localStorage.removeItem(LEGACY_NOTIFICATION_STORAGE_KEY);
+}
+
+function readNotificationSettings(): NotificationSettings {
+  try {
+    const stored = window.localStorage.getItem(NOTIFICATION_STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return Object.entries(parsed).reduce<NotificationSettings>((settings, [eventId, value]) => {
+          if (!value || typeof value !== "object") {
+            return settings;
+          }
+
+          const setting = value as Record<string, unknown>;
+          if (typeof setting.eventId === "string" && isRemindBefore(setting.remindBefore)) {
+            settings[eventId] = {
+              eventId: setting.eventId,
+              remindBefore: setting.remindBefore
+            };
+          }
+
+          return settings;
+        }, {});
+      }
+    }
+
+    const legacyStored = window.localStorage.getItem(LEGACY_NOTIFICATION_STORAGE_KEY);
+    if (legacyStored) {
+      const parsedLegacy = JSON.parse(legacyStored);
+      if (Array.isArray(parsedLegacy) && parsedLegacy.every((item) => typeof item === "string")) {
+        return Array.from(new Set(parsedLegacy)).reduce<NotificationSettings>((settings, eventId) => {
+          settings[eventId] = {
+            eventId,
+            remindBefore: "AT_TIME"
+          };
+
+          return settings;
+        }, {});
+      }
+    }
+  } catch {
+    window.localStorage.removeItem(NOTIFICATION_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_NOTIFICATION_STORAGE_KEY);
+  }
+
+  return {};
+}
+
+async function requestBrowserNotificationPermission() {
+  if (!("Notification" in window)) {
+    alert("이 브라우저에서는 알림을 사용할 수 없어요.");
+    return false;
+  }
+
+  const NotificationApi = window.Notification;
+
+  if (NotificationApi.permission === "granted") {
+    return true;
+  }
+
+  if (NotificationApi.permission === "denied") {
+    alert("알림 권한이 필요해요.");
+    return false;
+  }
+
+  const permission = await window.Notification.requestPermission();
+  if (permission !== "granted") {
+    alert("알림 권한이 필요해요.");
+    return false;
+  }
+
+  return true;
+}
+
+function showNotificationSetupToast() {
+  const NotificationApi = window.Notification;
+
+  try {
+    new NotificationApi("GOYO 알림이 설정되었어요");
+  } catch {
+    // 알림 설정 상태는 저장하되, 브라우저별 표시 제한은 조용히 넘깁니다.
+  }
 }
 
 function normalizeEmail(email: string) {
@@ -152,16 +524,68 @@ function getUserInitial(user: StoredUser | null) {
   return source.slice(0, 1).toUpperCase();
 }
 
+function getArtistGenresLabel(artist: Artist) {
+  return artist.genres.length > 0 ? artist.genres.join(" / ") : "장르 정보 없음";
+}
+
+function getArtistInitials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.slice(0, 1))
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function getArtistAvatarColor(artistId: string) {
+  const palette = ["#d9d9d9", "#e4e4e4", "#dcdcdc", "#dedede", "#e8e8e8", "#ededed"];
+  const colorIndex = [...artistId].reduce((total, char) => total + char.charCodeAt(0), 0) % palette.length;
+  return palette[colorIndex];
+}
+
+function getSafeArtistImageUrl(imageUrl: string) {
+  return imageUrl.trim() || ARTIST_IMAGE_PLACEHOLDER;
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>("login");
   const [selectedNewsId, setSelectedNewsId] = useState<string | null>(null);
-  const [detailBackScreen, setDetailBackScreen] = useState<MainTab>("home");
+  const [selectedCalendarEventId, setSelectedCalendarEventId] = useState<string | null>(null);
+  const [selectedArtist, setSelectedArtist] = useState<Artist | null>(null);
+  const [detailBackScreen, setDetailBackScreen] = useState<DetailBackScreen>("home");
   const [currentUser, setCurrentUser] = useState<StoredUser | null>(null);
-  const [followedArtistIds, setFollowedArtistIds] = useState<string[]>(readFollowedArtistIds);
+  const [followedArtists, setFollowedArtists] = useState<Artist[]>(readFollowedArtists);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
+    readNotificationSettings
+  );
+  const [sentNotificationIds, setSentNotificationIds] = useState<string[]>(readSentNotificationIds);
+  const followedArtistIds = useMemo(
+    () => followedArtists.map((artist) => artist.id),
+    [followedArtists]
+  );
 
   useEffect(() => {
-    saveFollowedArtistIds(followedArtistIds);
-  }, [followedArtistIds]);
+    saveFollowedArtists(followedArtists);
+  }, [followedArtists]);
+
+  useEffect(() => {
+    saveNotificationSettings(notificationSettings);
+  }, [notificationSettings]);
+
+  useEffect(() => {
+    return startNotificationScheduler(notificationSettings, calendarEvents, () => {
+      setSentNotificationIds(readSentNotificationIds());
+    });
+  }, [notificationSettings]);
+
+  useEffect(() => {
+    const refreshSentNotifications = () => setSentNotificationIds(readSentNotificationIds());
+    refreshSentNotifications();
+
+    const intervalId = window.setInterval(refreshSentNotifications, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -171,22 +595,89 @@ function App() {
     if (nextScreen !== "detail" && nextScreen !== "eventDetail") {
       setSelectedNewsId(null);
     }
+    if (nextScreen !== "eventDetail") {
+      setSelectedCalendarEventId(null);
+    }
+    if (nextScreen !== "artistDetail" && nextScreen !== "eventDetail") {
+      setSelectedArtist(null);
+    }
     setScreen(nextScreen);
   };
 
-  const toggleFollowArtist = (artistId: string) => {
-    const nextFollowedArtistIds = followedArtistIds.includes(artistId)
-      ? followedArtistIds.filter((id) => id !== artistId)
-      : Array.from(new Set([...followedArtistIds, artistId]));
+  const toggleFollowArtist = (artist: Artist) => {
+    setFollowedArtists((currentArtists) => {
+      const nextArtists = currentArtists.some((item) => item.id === artist.id)
+        ? currentArtists.filter((item) => item.id !== artist.id)
+        : dedupeArtists([...currentArtists, artist]);
 
-    setFollowedArtistIds(nextFollowedArtistIds);
-    saveFollowedArtistIds(nextFollowedArtistIds);
+      saveFollowedArtists(nextArtists);
+      return nextArtists;
+    });
   };
 
-  const openDetail = (newsId: string, backScreen: MainTab = "home") => {
+  const openDetail = (newsId: string, backScreen: DetailBackScreen = "home") => {
     setSelectedNewsId(newsId);
+    setSelectedCalendarEventId(null);
     setDetailBackScreen(backScreen);
-    setScreen(backScreen === "calendar" ? "eventDetail" : "detail");
+    setScreen(backScreen === "home" ? "detail" : "eventDetail");
+  };
+
+  const openArtistDetail = (artist: Artist) => {
+    setSelectedArtist(artist);
+    setSelectedNewsId(null);
+    setSelectedCalendarEventId(null);
+    setScreen("artistDetail");
+  };
+
+  const openCalendarEvent = (
+    calendarEventId: string,
+    backScreen: DetailBackScreen = "calendar"
+  ) => {
+    const event = calendarEvents.find((item) => item.id === calendarEventId);
+
+    if (!event) {
+      return;
+    }
+
+    setSelectedNewsId(event.musicNewsId);
+    setSelectedCalendarEventId(event.id);
+    setDetailBackScreen(backScreen);
+    setScreen("eventDetail");
+  };
+
+  const saveCalendarEventNotification = async (
+    calendarEventId: string,
+    remindBefore: RemindBefore
+  ) => {
+    const canUseNotification = await requestBrowserNotificationPermission();
+    if (!canUseNotification) {
+      return false;
+    }
+
+    setNotificationSettings((currentSettings) => {
+      const nextSettings = {
+        ...currentSettings,
+        [calendarEventId]: {
+          eventId: calendarEventId,
+          remindBefore
+        }
+      };
+
+      saveNotificationSettings(nextSettings);
+      return nextSettings;
+    });
+    showNotificationSetupToast();
+    return true;
+  };
+
+  const removeCalendarEventNotification = (calendarEventId: string) => {
+    setNotificationSettings((currentSettings) => {
+      const nextSettings = { ...currentSettings };
+      delete nextSettings[calendarEventId];
+      saveNotificationSettings(nextSettings);
+      return nextSettings;
+    });
+    setSentNotificationIds(readSentNotificationIds());
   };
 
   const handleLogin = (user: StoredUser) => {
@@ -206,11 +697,31 @@ function App() {
   if (screen === "home") {
     return (
       <HomeScreen
+        followedArtists={followedArtists}
         followedArtistIds={followedArtistIds}
         onToggleFollowArtist={toggleFollowArtist}
         onOpenDetail={(newsId) => openDetail(newsId, "home")}
+        onOpenArtistDetail={openArtistDetail}
         onOpenCalendar={() => showScreen("calendar")}
+        onOpenNotifications={() => showScreen("notificationCenter")}
         onOpenProfile={() => showScreen("profile")}
+      />
+    );
+  }
+
+  if (screen === "artistDetail") {
+    const artist =
+      selectedArtist &&
+      (followedArtists.find((followedArtist) => followedArtist.id === selectedArtist.id) ??
+        selectedArtist);
+
+    return (
+      <ArtistDetailScreen
+        artist={artist ?? undefined}
+        followed={artist ? followedArtistIds.includes(artist.id) : false}
+        onBack={() => showScreen("home")}
+        onToggleFollowArtist={toggleFollowArtist}
+        onOpenRelatedNews={(newsId) => openDetail(newsId, "artistDetail")}
       />
     );
   }
@@ -219,6 +730,7 @@ function App() {
     return (
       <ProfileScreen
         user={currentUser}
+        followedArtists={followedArtists}
         followedArtistIds={followedArtistIds}
         onBack={() => showScreen("home")}
         onLogout={handleLogout}
@@ -230,19 +742,44 @@ function App() {
     return (
       <CalendarScreen
         followedArtistIds={followedArtistIds}
-        onOpenEvent={(newsId) => openDetail(newsId, "calendar")}
+        notificationSettings={notificationSettings}
+        onOpenEvent={openCalendarEvent}
         onOpenHome={() => showScreen("home")}
+        onOpenNotifications={() => showScreen("notificationCenter")}
+        onSaveNotification={saveCalendarEventNotification}
+        onRemoveNotification={removeCalendarEventNotification}
+      />
+    );
+  }
+
+  if (screen === "notificationCenter") {
+    return (
+      <NotificationCenterScreen
+        notificationSettings={notificationSettings}
+        sentNotificationIds={sentNotificationIds}
+        onOpenCalendar={() => showScreen("calendar")}
+        onOpenHome={() => showScreen("home")}
+        onOpenEvent={(calendarEventId) => openCalendarEvent(calendarEventId, "notificationCenter")}
+        onRemoveNotification={removeCalendarEventNotification}
       />
     );
   }
 
   if (screen === "detail" || screen === "eventDetail") {
     const news = musicNews.find((item) => item.id === selectedNewsId);
+    const selectedCalendarEvent = calendarEvents.find(
+      (event) => event.id === selectedCalendarEventId
+    );
+
     return (
       <DetailScreen
         news={news}
+        calendarEvent={screen === "eventDetail" ? selectedCalendarEvent : undefined}
+        notificationSetting={selectedCalendarEvent ? notificationSettings[selectedCalendarEvent.id] : undefined}
         mode={screen === "eventDetail" ? "event" : "news"}
         onBack={() => showScreen(detailBackScreen)}
+        onSaveNotification={saveCalendarEventNotification}
+        onRemoveNotification={removeCalendarEventNotification}
       />
     );
   }
@@ -495,17 +1032,13 @@ function SignupScreen({ onBack, onComplete }: SignupScreenProps) {
 
 type ProfileScreenProps = {
   user: StoredUser | null;
+  followedArtists: Artist[];
   followedArtistIds: string[];
   onBack: () => void;
   onLogout: () => void;
 };
 
-function ProfileScreen({ user, followedArtistIds, onBack, onLogout }: ProfileScreenProps) {
-  const followedArtists = useMemo(
-    () => artists.filter((artist) => followedArtistIds.includes(artist.id)),
-    [followedArtistIds]
-  );
-
+function ProfileScreen({ user, followedArtists, followedArtistIds, onBack, onLogout }: ProfileScreenProps) {
   const followedNewsCount = useMemo(
     () => musicNews.filter((news) => followedArtistIds.includes(news.artistId)).length,
     [followedArtistIds]
@@ -547,7 +1080,7 @@ function ProfileScreen({ user, followedArtistIds, onBack, onLogout }: ProfileScr
                 <Avatar artist={artist} size="small" />
                 <div>
                   <strong>{artist.name}</strong>
-                  <span>{artist.genre}</span>
+                  <span>{getArtistGenresLabel(artist)}</span>
                 </div>
               </div>
             ))}
@@ -570,27 +1103,31 @@ function ProfileScreen({ user, followedArtistIds, onBack, onLogout }: ProfileScr
 }
 
 type HomeScreenProps = {
+  followedArtists: Artist[];
   followedArtistIds: string[];
-  onToggleFollowArtist: (artistId: string) => void;
+  onToggleFollowArtist: (artist: Artist) => void;
   onOpenDetail: (newsId: string) => void;
+  onOpenArtistDetail: (artist: Artist) => void;
   onOpenCalendar: () => void;
+  onOpenNotifications: () => void;
   onOpenProfile: () => void;
 };
 
 function HomeScreen({
+  followedArtists,
   followedArtistIds,
   onToggleFollowArtist,
   onOpenDetail,
+  onOpenArtistDetail,
   onOpenCalendar,
+  onOpenNotifications,
   onOpenProfile
 }: HomeScreenProps) {
   const [query, setQuery] = useState("");
   const [selectedArtistId, setSelectedArtistId] = useState<string | null>(null);
-
-  const followedArtists = useMemo(
-    () => artists.filter((artist) => followedArtistIds.includes(artist.id)),
-    [followedArtistIds]
-  );
+  const [audioDbArtists, setAudioDbArtists] = useState<Artist[]>([]);
+  const [searchStatus, setSearchStatus] = useState<"idle" | "loading" | "done">("idle");
+  const searchCacheRef = useRef<Record<string, Artist[]>>(readArtistSearchCache());
 
   const selectedArtist = useMemo(
     () => followedArtists.find((artist) => artist.id === selectedArtistId),
@@ -601,7 +1138,7 @@ function HomeScreen({
     () =>
       musicNews
         .filter((news) => followedArtistIds.includes(news.artistId))
-        .sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)),
+        .sort((a, b) => getNewsSortTime(b) - getNewsSortTime(a)),
     [followedArtistIds]
   );
 
@@ -619,44 +1156,106 @@ function HomeScreen({
     }
   }, [followedArtistIds, selectedArtistId]);
 
-  const searchedArtists = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
+  const mockSearchedArtists = useMemo(() => {
+    const keyword = normalizeArtistSearchKey(query);
     if (!keyword) {
       return [];
     }
 
     return artists.filter((artist) =>
-      `${artist.name} ${artist.genre}`.toLowerCase().includes(keyword)
+      `${artist.name} ${getArtistGenresLabel(artist)}`.toLowerCase().includes(keyword)
     );
   }, [query]);
 
+  useEffect(() => {
+    const keyword = query.trim();
+    const cacheKey = normalizeArtistSearchKey(keyword);
+
+    if (!keyword) {
+      setAudioDbArtists([]);
+      setSearchStatus("idle");
+      return undefined;
+    }
+
+    if (cacheKey.length < MIN_REMOTE_SEARCH_LENGTH) {
+      setAudioDbArtists([]);
+      setSearchStatus("done");
+      return undefined;
+    }
+
+    const cachedArtists = searchCacheRef.current[cacheKey];
+    if (cachedArtists) {
+      setAudioDbArtists(cachedArtists);
+      setSearchStatus("done");
+      return undefined;
+    }
+
+    let cancelled = false;
+    setSearchStatus("loading");
+
+    const timeoutId = window.setTimeout(() => {
+      searchTheAudioDbArtists(keyword)
+        .then((remoteArtists) => {
+          if (cancelled) {
+            return;
+          }
+
+          const cachedRemoteArtists = dedupeArtistsByName(remoteArtists);
+          searchCacheRef.current = {
+            ...searchCacheRef.current,
+            [cacheKey]: cachedRemoteArtists
+          };
+          saveArtistSearchCache(searchCacheRef.current);
+          setAudioDbArtists(cachedRemoteArtists);
+          setSearchStatus("done");
+        })
+        .catch(() => {
+          if (cancelled) {
+            return;
+          }
+
+          setAudioDbArtists([]);
+          setSearchStatus("done");
+        });
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [query]);
+
+  const searchedArtists = useMemo(() => {
+    if (searchStatus !== "done") {
+      return [];
+    }
+
+    return dedupeSearchArtistsByName(
+      [...audioDbArtists, ...mockSearchedArtists],
+      followedArtistIds
+    );
+  }, [audioDbArtists, followedArtistIds, mockSearchedArtists, searchStatus]);
+
   const handleSearchResultSelect = (
-    artistId: string,
+    artist: Artist,
     event: MouseEvent<HTMLButtonElement>
   ) => {
     event.stopPropagation();
-    if (!followedArtistIds.includes(artistId)) {
-      onToggleFollowArtist(artistId);
-    }
-    setSelectedArtistId(artistId);
     setQuery("");
+    onOpenArtistDetail(artist);
   };
 
   const handleSearchFollowButtonClick = (
-    artistId: string,
+    artist: Artist,
     event: MouseEvent<HTMLButtonElement>
   ) => {
     event.stopPropagation();
-    const isAlreadyFollowed = followedArtistIds.includes(artistId);
+    const isAlreadyFollowed = followedArtistIds.includes(artist.id);
 
-    onToggleFollowArtist(artistId);
+    onToggleFollowArtist(artist);
     setSelectedArtistId((currentArtistId) => {
-      if (isAlreadyFollowed && currentArtistId === artistId) {
+      if (isAlreadyFollowed && currentArtistId === artist.id) {
         return null;
-      }
-
-      if (!isAlreadyFollowed) {
-        return artistId;
       }
 
       return currentArtistId;
@@ -664,13 +1263,11 @@ function HomeScreen({
   };
 
   const handleFollowedArtistClick = (
-    artistId: string,
+    artist: Artist,
     event: MouseEvent<HTMLButtonElement>
   ) => {
     event.stopPropagation();
-    setSelectedArtistId((currentArtistId) =>
-      currentArtistId === artistId ? null : artistId
-    );
+    onOpenArtistDetail(artist);
   };
 
   return (
@@ -696,7 +1293,9 @@ function HomeScreen({
 
       {query.trim() && (
         <section className="search-results" aria-label="검색 결과">
-          {searchedArtists.length > 0 ? (
+          {searchStatus === "loading" ? (
+            <SearchLoadingState />
+          ) : searchedArtists.length > 0 ? (
             searchedArtists.map((artist) => (
               <ArtistSearchRow
                 key={artist.id}
@@ -725,7 +1324,7 @@ function HomeScreen({
                 className={`artist-chip ${selectedArtistId === artist.id ? "is-selected" : ""}`}
                 key={artist.id}
                 type="button"
-                onClick={(event) => handleFollowedArtistClick(artist.id, event)}
+                onClick={(event) => handleFollowedArtistClick(artist, event)}
               >
                 <Avatar artist={artist} size="large" />
                 <span>{artist.name}</span>
@@ -735,7 +1334,7 @@ function HomeScreen({
         ) : (
           <EmptyState
             title="아직 팔로우한 아티스트가 없어요"
-            description="검색 결과에서 아티스트를 누르면 이곳에 저장됩니다."
+            description="검색 결과의 팔로우 버튼을 누르면 이곳에 저장됩니다."
           />
         )}
       </section>
@@ -776,7 +1375,12 @@ function HomeScreen({
         )}
       </section>
 
-      <BottomNav activeTab="home" onHome={() => undefined} onCalendar={onOpenCalendar} />
+      <BottomNav
+        activeTab="home"
+        onHome={() => undefined}
+        onCalendar={onOpenCalendar}
+        onNotifications={onOpenNotifications}
+      />
     </main>
   );
 }
@@ -784,8 +1388,8 @@ function HomeScreen({
 type ArtistSearchRowProps = {
   artist: Artist;
   followed: boolean;
-  onSelect: (artistId: string, event: MouseEvent<HTMLButtonElement>) => void;
-  onToggleFollow: (artistId: string, event: MouseEvent<HTMLButtonElement>) => void;
+  onSelect: (artist: Artist, event: MouseEvent<HTMLButtonElement>) => void;
+  onToggleFollow: (artist: Artist, event: MouseEvent<HTMLButtonElement>) => void;
 };
 
 function ArtistSearchRow({
@@ -796,37 +1400,83 @@ function ArtistSearchRow({
 }: ArtistSearchRowProps) {
   return (
     <article className="artist-row">
-      <button
+      <div
         className="artist-row-profile"
-        type="button"
-        onClick={(event) => onSelect(artist.id, event)}
       >
         <Avatar artist={artist} size="small" />
         <span className="artist-row-copy">
           <strong>{artist.name}</strong>
-          <span>{artist.genre}</span>
+          <span>{getArtistGenresLabel(artist)}</span>
+          <em>{artist.source === "THEAUDIODB" ? "TheAudioDB" : artist.source}</em>
         </span>
-      </button>
-      <button
-        className={`follow-action-button ${followed ? "is-followed" : ""}`}
-        type="button"
-        onClick={(event) => onToggleFollow(artist.id, event)}
-      >
-        {followed ? "팔로잉" : "팔로우"}
-      </button>
+      </div>
+
+      <div className="artist-row-actions">
+        <button
+          className={`follow-action-button ${followed ? "is-followed" : ""}`}
+          type="button"
+          onClick={(event) => onToggleFollow(artist, event)}
+        >
+          {followed ? "팔로잉" : "팔로우"}
+        </button>
+        <button
+          className="detail-action-button"
+          type="button"
+          onClick={(event) => onSelect(artist, event)}
+        >
+          상세 보기
+        </button>
+      </div>
     </article>
   );
 }
 
+function SearchLoadingState() {
+  return (
+    <div className="search-loading" role="status" aria-label="아티스트 검색 중">
+      <span className="loading-line loading-line-wide" />
+      <span className="loading-line" />
+      <span>TheAudioDB에서 아티스트를 찾고 있어요</span>
+    </div>
+  );
+}
+
 function Avatar({ artist, size }: { artist: Artist; size: "small" | "large" }) {
+  const initials = getArtistInitials(artist.name);
+  const imageUrl = getSafeArtistImageUrl(artist.imageUrl);
+
   return (
     <span
       className={`avatar avatar-${size}`}
-      style={{ backgroundColor: artist.color }}
+      style={{ backgroundColor: getArtistAvatarColor(artist.id) }}
       aria-hidden="true"
     >
-      {artist.initials}
+      <span className="avatar-initials">{initials}</span>
+      <img
+        src={imageUrl}
+        alt=""
+        draggable={false}
+        onError={(event) => {
+          event.currentTarget.onerror = null;
+          event.currentTarget.src = ARTIST_IMAGE_PLACEHOLDER;
+        }}
+      />
     </span>
+  );
+}
+
+function ArtistImage({ artist, className }: { artist: Artist; className: string }) {
+  return (
+    <img
+      className={className}
+      src={getSafeArtistImageUrl(artist.imageUrl)}
+      alt={`${artist.name} 이미지`}
+      draggable={false}
+      onError={(event) => {
+        event.currentTarget.onerror = null;
+        event.currentTarget.src = ARTIST_IMAGE_PLACEHOLDER;
+      }}
+    />
   );
 }
 
@@ -852,7 +1502,7 @@ function SelectedArtistPanel({
         <div>
           <span>팔로우 중</span>
           <h3>{artist.name}</h3>
-          <p>{artist.genre}</p>
+          <p>{getArtistGenresLabel(artist)}</p>
         </div>
       </div>
 
@@ -862,10 +1512,14 @@ function SelectedArtistPanel({
           <span>등록된 소식</span>
         </div>
         <div>
-          <strong>{latestNews?.category ?? "-"}</strong>
+          <strong>{latestNews ? getCategoryLabel(latestNews.category) : "-"}</strong>
           <span>최근 업데이트</span>
         </div>
       </div>
+
+      {artist.description && (
+        <p className="selected-artist-description">{artist.description}</p>
+      )}
 
       {latestNews && (
         <button
@@ -876,7 +1530,7 @@ function SelectedArtistPanel({
             onOpenDetail(latestNews.id);
           }}
         >
-          <span>{latestNews.dateLabel}</span>
+          <span>{getNewsDateLabel(latestNews)}</span>
           <strong>{latestNews.title}</strong>
         </button>
       )}
@@ -888,28 +1542,141 @@ function SelectedArtistPanel({
   );
 }
 
-type CalendarScreenProps = {
-  followedArtistIds: string[];
-  onOpenEvent: (newsId: string) => void;
-  onOpenHome: () => void;
+type ArtistDetailScreenProps = {
+  artist?: Artist;
+  followed: boolean;
+  onBack: () => void;
+  onToggleFollowArtist: (artist: Artist) => void;
+  onOpenRelatedNews: (newsId: string) => void;
 };
 
-function CalendarScreen({ followedArtistIds, onOpenEvent, onOpenHome }: CalendarScreenProps) {
+function ArtistDetailScreen({
+  artist,
+  followed,
+  onBack,
+  onToggleFollowArtist,
+  onOpenRelatedNews
+}: ArtistDetailScreenProps) {
+  const relatedNews = useMemo(
+    () =>
+      artist
+        ? musicNews
+            .filter((news) => news.artistId === artist.id)
+            .sort((a, b) => getNewsSortTime(b) - getNewsSortTime(a))
+        : [],
+    [artist]
+  );
+
+  if (!artist) {
+    return (
+      <main className="app-shell page-shell detail-shell">
+        <button className="round-icon-button floating-back" type="button" onClick={onBack}>
+          <ArrowLeft size={24} aria-hidden="true" />
+          <span className="sr-only">홈으로</span>
+        </button>
+        <section className="not-found">
+          <h1>아티스트 정보를 찾을 수 없습니다.</h1>
+          <button className="primary-button blue-button" type="button" onClick={onBack}>
+            홈으로 돌아가기
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell artist-detail-shell">
+      <section className="artist-detail-hero">
+        <button className="round-icon-button floating-back" type="button" onClick={onBack}>
+          <ArrowLeft size={24} aria-hidden="true" />
+          <span className="sr-only">뒤로가기</span>
+        </button>
+        <ArtistImage artist={artist} className="artist-detail-image" />
+      </section>
+
+      <section className="artist-detail-body">
+        <span className="artist-source-label">
+          {artist.source === "THEAUDIODB" ? "TheAudioDB" : artist.source}
+        </span>
+        <h1>{artist.name}</h1>
+        <p className="artist-detail-genres">{getArtistGenresLabel(artist)}</p>
+        <p className="artist-detail-description">
+          {artist.description ?? "아티스트 설명이 아직 준비되지 않았어요."}
+        </p>
+
+        {artist.externalUrl && (
+          <a
+            className="artist-external-link"
+            href={artist.externalUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            공식 사이트 보기
+          </a>
+        )}
+
+        <button
+          className={`artist-follow-button ${followed ? "is-followed" : ""}`}
+          type="button"
+          onClick={() => onToggleFollowArtist(artist)}
+        >
+          {followed ? "언팔로우" : "팔로우"}
+        </button>
+      </section>
+
+      <section className="artist-related-section">
+        <h2>관련 소식</h2>
+        {relatedNews.length > 0 ? (
+          <div className="timeline">
+            {relatedNews.map((news) => (
+              <NewsCard key={news.id} news={news} onOpenDetail={onOpenRelatedNews} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="아직 등록된 소식이 없어요"
+            description="새로운 공연, 발매, 티켓 소식이 생기면 이곳에 보여드려요."
+          />
+        )}
+      </section>
+    </main>
+  );
+}
+
+type CalendarScreenProps = {
+  followedArtistIds: string[];
+  notificationSettings: NotificationSettings;
+  onOpenEvent: (calendarEventId: string) => void;
+  onOpenHome: () => void;
+  onOpenNotifications: () => void;
+  onSaveNotification: (calendarEventId: string, remindBefore: RemindBefore) => Promise<boolean>;
+  onRemoveNotification: (calendarEventId: string) => void;
+};
+
+function CalendarScreen({
+  followedArtistIds,
+  notificationSettings,
+  onOpenEvent,
+  onOpenHome,
+  onOpenNotifications,
+  onSaveNotification,
+  onRemoveNotification
+}: CalendarScreenProps) {
   const [filter, setFilter] = useState<CalendarFilter>("month");
 
   const followedEvents = useMemo(
     () =>
-      musicNews
-        .filter((news) => followedArtistIds.includes(news.artistId))
-        .sort((a, b) => parseLocalDate(a.eventDate).getTime() - parseLocalDate(b.eventDate).getTime()),
+      calendarEvents
+        .filter((event) => followedArtistIds.includes(event.artistId))
+        .sort((a, b) => getDateTime(a.date) - getDateTime(b.date)),
     [followedArtistIds]
   );
 
   const filteredEvents = useMemo(() => {
     const today = new Date();
 
-    return followedEvents.filter((news) => {
-      const eventDate = parseLocalDate(news.eventDate);
+    return followedEvents.filter((event) => {
+      const eventDate = parseLocalDate(event.date);
 
       if (filter === "today") {
         return isSameDate(eventDate, today);
@@ -924,15 +1691,15 @@ function CalendarScreen({ followedArtistIds, onOpenEvent, onOpenHome }: Calendar
   }, [filter, followedEvents]);
 
   const groupedEvents = useMemo(() => {
-    return filteredEvents.reduce<Array<{ date: string; events: MusicNews[] }>>((groups, event) => {
-      const existingGroup = groups.find((group) => group.date === event.eventDate);
+    return filteredEvents.reduce<Array<{ date: string; events: CalendarEvent[] }>>((groups, event) => {
+      const existingGroup = groups.find((group) => group.date === event.date);
 
       if (existingGroup) {
         existingGroup.events.push(event);
         return groups;
       }
 
-      return [...groups, { date: event.eventDate, events: [event] }];
+      return [...groups, { date: event.date, events: [event] }];
     }, []);
   }, [filteredEvents]);
 
@@ -981,7 +1748,14 @@ function CalendarScreen({ followedArtistIds, onOpenEvent, onOpenHome }: Calendar
 
               <div className="calendar-date-events">
                 {group.events.map((event) => (
-                  <CalendarEventCard key={event.id} event={event} onOpenEvent={onOpenEvent} />
+                  <CalendarEventCard
+                    key={event.id}
+                    event={event}
+                    notificationSetting={notificationSettings[event.id]}
+                    onOpenEvent={onOpenEvent}
+                    onSaveNotification={onSaveNotification}
+                    onRemoveNotification={onRemoveNotification}
+                  />
                 ))}
               </div>
             </div>
@@ -994,31 +1768,245 @@ function CalendarScreen({ followedArtistIds, onOpenEvent, onOpenHome }: Calendar
         />
       )}
 
-      <BottomNav activeTab="calendar" onHome={onOpenHome} onCalendar={() => undefined} />
+      <BottomNav
+        activeTab="calendar"
+        onHome={onOpenHome}
+        onCalendar={() => undefined}
+        onNotifications={onOpenNotifications}
+      />
     </main>
   );
 }
 
 type CalendarEventCardProps = {
-  event: MusicNews;
-  onOpenEvent: (newsId: string) => void;
+  event: CalendarEvent;
+  notificationSetting?: NotificationSetting;
+  onOpenEvent: (calendarEventId: string) => void;
+  onSaveNotification: (calendarEventId: string, remindBefore: RemindBefore) => Promise<boolean>;
+  onRemoveNotification: (calendarEventId: string) => void;
 };
 
-function CalendarEventCard({ event, onOpenEvent }: CalendarEventCardProps) {
+function CalendarEventCard({
+  event,
+  notificationSetting,
+  onOpenEvent,
+  onSaveNotification,
+  onRemoveNotification
+}: CalendarEventCardProps) {
   const artist = artists.find((item) => item.id === event.artistId);
+  const sourceNews = musicNews.find((item) => item.id === event.musicNewsId);
+  const notificationEnabled = Boolean(notificationSetting);
 
   return (
-    <button className="calendar-event-card" type="button" onClick={() => onOpenEvent(event.id)}>
-      <div className="calendar-event-date">
-        <strong>{formatShortDate(event.eventDate)}</strong>
-        <span>{event.category}</span>
-      </div>
-      <div className="calendar-event-copy">
-        <span>{artist?.name ?? "아티스트"}</span>
-        <h3>{event.title}</h3>
-        <p>{event.location ?? event.subtitle}</p>
-      </div>
-    </button>
+    <article className={`calendar-event-card ${notificationEnabled ? "is-notified" : ""}`}>
+      <button
+        className="calendar-event-main"
+        type="button"
+        onClick={() => onOpenEvent(event.id)}
+      >
+        <div className="calendar-event-date">
+          <strong>{formatShortDate(event.date)}</strong>
+          <span>{getCalendarEventTypeLabel(event.type)}</span>
+        </div>
+        <div className="calendar-event-copy">
+          <span>{artist?.name ?? "아티스트"} · {getCategoryLabel(event.category)}</span>
+          <h3>{event.title}</h3>
+          <p>{sourceNews?.venue ?? sourceNews?.subtitle ?? "일정 상세"}</p>
+        </div>
+      </button>
+
+      <NotificationControls
+        setting={notificationSetting}
+        variant="calendar"
+        onSave={(remindBefore) => onSaveNotification(event.id, remindBefore)}
+        onRemove={() => onRemoveNotification(event.id)}
+      />
+    </article>
+  );
+}
+
+type NotificationCenterScreenProps = {
+  notificationSettings: NotificationSettings;
+  sentNotificationIds: string[];
+  onOpenCalendar: () => void;
+  onOpenHome: () => void;
+  onOpenEvent: (calendarEventId: string) => void;
+  onRemoveNotification: (calendarEventId: string) => void;
+};
+
+function NotificationCenterScreen({
+  notificationSettings,
+  sentNotificationIds,
+  onOpenCalendar,
+  onOpenHome,
+  onOpenEvent,
+  onRemoveNotification
+}: NotificationCenterScreenProps) {
+  const notificationItems = useMemo(() => {
+    return Object.values(notificationSettings)
+      .map((setting) => {
+        const event = calendarEvents.find((calendarEvent) => calendarEvent.id === setting.eventId);
+        return event ? { event, setting } : null;
+      })
+      .filter((item): item is { event: CalendarEvent; setting: NotificationSetting } => Boolean(item))
+      .sort((a, b) => {
+        const aPast = isPastCalendarDate(a.event.date);
+        const bPast = isPastCalendarDate(b.event.date);
+
+        if (aPast !== bPast) {
+          return aPast ? 1 : -1;
+        }
+
+        const aTime = getDateTime(a.event.date);
+        const bTime = getDateTime(b.event.date);
+        return aPast ? bTime - aTime : aTime - bTime;
+      });
+  }, [notificationSettings]);
+
+  return (
+    <main className="app-shell page-shell notification-center-shell">
+      <header className="calendar-header">
+        <div>
+          <span>GOYO Notification</span>
+          <h1>알림센터</h1>
+          <p>설정한 음악 일정 알림과 발송 상태를 모아볼 수 있어요.</p>
+        </div>
+      </header>
+
+      {notificationItems.length > 0 ? (
+        <section className="notification-list" aria-label="알림 설정 목록">
+          {notificationItems.map(({ event, setting }) => {
+            const artist = artists.find((item) => item.id === event.artistId);
+            const sent = sentNotificationIds.includes(
+              getScheduledNotificationId(event.id, setting.remindBefore)
+            );
+            const past = isPastCalendarDate(event.date);
+
+            return (
+              <article className={`notification-list-item ${past ? "is-past" : ""}`} key={event.id}>
+                <button
+                  className="notification-list-main"
+                  type="button"
+                  onClick={() => onOpenEvent(event.id)}
+                >
+                  <div className="notification-list-date">
+                    <strong>{formatShortDate(event.date)}</strong>
+                    <span>{getCalendarEventTypeLabel(event.type)}</span>
+                  </div>
+
+                  <div className="notification-list-copy">
+                    <div className="notification-list-badges">
+                      <span>{getReminderLabel(setting.remindBefore)}</span>
+                      {sent && <span className="is-sent">발송됨</span>}
+                      {past && <span className="is-past-label">지난 일정</span>}
+                    </div>
+                    <h2>{event.title}</h2>
+                    <p>{artist?.name ?? "아티스트"} · {getCategoryLabel(event.category)}</p>
+                  </div>
+                </button>
+
+                <button
+                  className="notification-remove-button"
+                  type="button"
+                  onClick={() => onRemoveNotification(event.id)}
+                >
+                  알림 해제
+                </button>
+              </article>
+            );
+          })}
+        </section>
+      ) : (
+        <EmptyState
+          title="설정된 알림이 없어요"
+          description="캘린더에서 음악 일정별 알림 시간을 선택하면 이곳에 표시됩니다."
+        />
+      )}
+
+      <BottomNav
+        activeTab="notifications"
+        onHome={onOpenHome}
+        onCalendar={onOpenCalendar}
+        onNotifications={() => undefined}
+      />
+    </main>
+  );
+}
+
+type NotificationControlsProps = {
+  setting?: NotificationSetting;
+  variant: "calendar" | "detail";
+  onSave: (remindBefore: RemindBefore) => Promise<boolean>;
+  onRemove: () => void;
+};
+
+function NotificationControls({
+  setting,
+  variant,
+  onSave,
+  onRemove
+}: NotificationControlsProps) {
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const enabled = Boolean(setting);
+  const buttonClassName =
+    variant === "calendar"
+      ? `calendar-notification-button ${enabled ? "is-enabled" : ""}`
+      : `notification-button ${enabled ? "is-enabled" : ""}`;
+
+  const handleOptionSelect = async (remindBefore: RemindBefore) => {
+    const saved = await onSave(remindBefore);
+    if (saved) {
+      setOptionsOpen(false);
+    }
+  };
+
+  return (
+    <div className={`notification-control notification-control-${variant}`}>
+      <button
+        className={buttonClassName}
+        type="button"
+        aria-expanded={optionsOpen}
+        aria-pressed={enabled}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOptionsOpen((currentOpen) => !currentOpen);
+        }}
+      >
+        {enabled ? "알림 설정됨" : "알림 받기"}
+      </button>
+
+      {optionsOpen && (
+        <div className="notification-options" aria-label="알림 시간 선택">
+          {REMINDER_OPTIONS.map((option) => (
+            <button
+              className={setting?.remindBefore === option.value ? "is-selected" : ""}
+              key={option.value}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleOptionSelect(option.value);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+
+          {enabled && (
+            <button
+              className="notification-clear-option"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemove();
+                setOptionsOpen(false);
+              }}
+            >
+              알림 해제
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1035,9 +2023,9 @@ function NewsCard({ news, onOpenDetail }: NewsCardProps) {
 
   return (
     <article className="timeline-item">
-      <div className="timeline-date">{news.dateLabel}</div>
+      <div className="timeline-date">{getNewsDateLabel(news)}</div>
       <button className="news-card" type="button" onClick={handleClick}>
-        <span>{news.category}</span>
+        <span>{getCategoryLabel(news.category)}</span>
         <h3>{news.title}</h3>
         <p>{news.subtitle}</p>
       </button>
@@ -1047,11 +2035,23 @@ function NewsCard({ news, onOpenDetail }: NewsCardProps) {
 
 type DetailScreenProps = {
   news?: MusicNews;
+  calendarEvent?: CalendarEvent;
+  notificationSetting?: NotificationSetting;
   mode?: "news" | "event";
   onBack: () => void;
+  onSaveNotification?: (calendarEventId: string, remindBefore: RemindBefore) => Promise<boolean>;
+  onRemoveNotification?: (calendarEventId: string) => void;
 };
 
-function DetailScreen({ news, mode = "news", onBack }: DetailScreenProps) {
+function DetailScreen({
+  news,
+  calendarEvent,
+  notificationSetting,
+  mode = "news",
+  onBack,
+  onSaveNotification,
+  onRemoveNotification
+}: DetailScreenProps) {
   if (!news) {
     return (
       <main className="app-shell page-shell detail-shell">
@@ -1071,20 +2071,33 @@ function DetailScreen({ news, mode = "news", onBack }: DetailScreenProps) {
 
   return (
     <main className="app-shell detail-shell">
-      <section className="detail-hero" style={{ backgroundColor: news.heroColor }}>
+      <section className="detail-hero" style={{ backgroundColor: getNewsHeroColor(news) }}>
         <button className="round-icon-button floating-back" type="button" onClick={onBack}>
           <ArrowLeft size={24} aria-hidden="true" />
           <span className="sr-only">뒤로가기</span>
         </button>
+        {news.imageUrl && (
+          <img
+            className="detail-hero-image"
+            src={news.imageUrl}
+            alt=""
+            draggable={false}
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+            }}
+          />
+        )}
       </section>
 
       <section className="detail-body">
-        <span className="detail-category">{mode === "event" ? `EVENT · ${news.category}` : news.category}</span>
+        <span className="detail-category">
+          {mode === "event" ? `EVENT · ${getCategoryLabel(news.category)}` : getCategoryLabel(news.category)}
+        </span>
         <h1>{news.title}</h1>
-        <p className="detail-location">{news.location ?? news.subtitle}</p>
+        <p className="detail-location">{news.venue ?? news.subtitle}</p>
 
         <dl className="info-list">
-          {news.infoRows.map((row) => (
+          {getNewsInfoRows(news).map((row) => (
             <div key={row.label}>
               <dt>{row.label}</dt>
               <dd>{row.value}</dd>
@@ -1092,7 +2105,16 @@ function DetailScreen({ news, mode = "news", onBack }: DetailScreenProps) {
           ))}
         </dl>
 
-        <p className="detail-copy">{news.body}</p>
+        <p className="detail-copy">{news.description}</p>
+
+        {mode === "event" && calendarEvent && onSaveNotification && onRemoveNotification && (
+          <NotificationControls
+            setting={notificationSetting}
+            variant="detail"
+            onSave={(remindBefore) => onSaveNotification(calendarEvent.id, remindBefore)}
+            onRemove={() => onRemoveNotification(calendarEvent.id)}
+          />
+        )}
 
         <button
           className="primary-button blue-button"
@@ -1110,14 +2132,20 @@ type BottomNavProps = {
   activeTab: MainTab;
   onHome: () => void;
   onCalendar: () => void;
+  onNotifications: () => void;
 };
 
-function BottomNav({ activeTab, onHome, onCalendar }: BottomNavProps) {
+function BottomNav({ activeTab, onHome, onCalendar, onNotifications }: BottomNavProps) {
   return (
     <nav className="bottom-nav" aria-label="하단 메뉴">
-      <button type="button" aria-label="메뉴" onClick={() => alert("메뉴 기능은 준비 중입니다.")}>
-        <Menu size={32} aria-hidden="true" />
-        <span>메뉴</span>
+      <button
+        className={activeTab === "notifications" ? "active" : ""}
+        type="button"
+        aria-label="알림센터"
+        onClick={onNotifications}
+      >
+        <Bell size={31} aria-hidden="true" />
+        <span>알림</span>
       </button>
       <button
         className={activeTab === "home" ? "active" : ""}

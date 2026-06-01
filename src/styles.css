@@ -493,13 +493,51 @@ button {
   padding-bottom: 2px;
 }
 
+.search-loading {
+  display: grid;
+  gap: 8px;
+  min-height: 92px;
+  align-content: center;
+  border: 1px solid #e4e4e4;
+  border-radius: 18px;
+  background: #ffffff;
+  color: #77777e;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.loading-line {
+  display: block;
+  width: 42%;
+  height: 11px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f1f1f5 0%, #e5e8f0 50%, #f1f1f5 100%);
+  background-size: 200% 100%;
+  animation: search-loading-shimmer 1200ms ease-in-out infinite;
+}
+
+.loading-line-wide {
+  width: 68%;
+}
+
+@keyframes search-loading-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
+}
+
 .artist-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr 84px;
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 66px;
+  min-height: 94px;
   border: 1px solid #e4e4e4;
   border-radius: 18px;
   padding: 10px 12px;
@@ -520,7 +558,6 @@ button {
   color: #1f1f1f;
   padding: 0;
   text-align: left;
-  cursor: pointer;
 }
 
 .artist-row-copy {
@@ -540,11 +577,27 @@ button {
   font-weight: 600;
 }
 
+.artist-row-copy em {
+  justify-self: start;
+  border-radius: 999px;
+  background: #f3f6ff;
+  color: var(--blue);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.artist-row-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .follow-action-button {
   display: grid;
   place-items: center;
-  min-width: 70px;
-  min-height: 40px;
+  min-width: 78px;
+  min-height: 48px;
   border: 1px solid var(--blue);
   border-radius: 999px;
   background: var(--blue);
@@ -557,6 +610,20 @@ button {
 .follow-action-button.is-followed {
   background: #ffffff;
   color: var(--blue);
+}
+
+.detail-action-button {
+  display: grid;
+  place-items: center;
+  min-width: 78px;
+  min-height: 48px;
+  border: 1px solid #e0e2ea;
+  border-radius: 999px;
+  background: #f7f8fb;
+  color: #1f1f1f;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
 }
 
 .content-section {
@@ -617,9 +684,29 @@ button {
 .avatar {
   display: grid;
   place-items: center;
+  position: relative;
   border-radius: 50%;
   color: #868686;
   font-weight: 900;
+  overflow: hidden;
+}
+
+.avatar-initials,
+.avatar img {
+  grid-area: 1 / 1;
+}
+
+.avatar-initials {
+  z-index: 1;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #f3f6ff;
+  object-fit: cover;
+  z-index: 2;
 }
 
 .avatar-large {
@@ -733,9 +820,7 @@ button {
 
 .calendar-event-card {
   display: grid;
-  grid-template-columns: 76px 1fr;
-  align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   min-height: 104px;
   border: 1px solid #e3e4ea;
@@ -744,8 +829,27 @@ button {
   padding: 14px;
   color: #1f1f1f;
   text-align: left;
-  cursor: pointer;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.045);
+}
+
+.calendar-event-card.is-notified {
+  border-color: rgba(11, 92, 255, 0.34);
+  box-shadow: 0 12px 28px rgba(11, 92, 255, 0.08);
+}
+
+.calendar-event-main {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 74px;
+  border: 0;
+  background: transparent;
+  color: #1f1f1f;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
 }
 
 .calendar-event-date {
@@ -802,6 +906,197 @@ button {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 700;
+}
+
+.calendar-notification-button {
+  justify-self: start;
+  min-height: 48px;
+  border: 1px solid #e0e2ea;
+  border-radius: 999px;
+  background: #f7f8fb;
+  color: #555a66;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.calendar-notification-button.is-enabled {
+  border-color: rgba(11, 92, 255, 0.22);
+  background: #f3f6ff;
+  color: var(--blue);
+}
+
+.notification-control {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-control-calendar {
+  justify-items: start;
+}
+
+.notification-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  border-radius: 18px;
+  background: #f7f8fb;
+  padding: 10px;
+}
+
+.notification-options button {
+  min-height: 48px;
+  border: 1px solid #e0e2ea;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #555a66;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.notification-options button.is-selected {
+  border-color: rgba(11, 92, 255, 0.28);
+  background: #f3f6ff;
+  color: var(--blue);
+}
+
+.notification-options .notification-clear-option {
+  grid-column: 1 / -1;
+  background: #fff7f7;
+  color: #e54848;
+}
+
+.notification-center-shell {
+  padding-top: calc(var(--safe-top) + 34px);
+}
+
+.notification-list {
+  display: grid;
+  gap: 12px;
+}
+
+.notification-list-item {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  border: 1px solid #e3e4ea;
+  border-radius: 20px;
+  background: #ffffff;
+  padding: 14px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.045);
+}
+
+.notification-list-item.is-past {
+  background: #fbfbfc;
+}
+
+.notification-list-main {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 78px;
+  border: 0;
+  background: transparent;
+  color: #1f1f1f;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notification-list-date {
+  display: grid;
+  gap: 7px;
+  place-items: center;
+  min-height: 74px;
+  border-radius: 16px;
+  background: #f3f6ff;
+  padding: 10px 6px;
+}
+
+.notification-list-date strong {
+  color: var(--blue);
+  font-size: 17px;
+  font-weight: 950;
+}
+
+.notification-list-date span {
+  max-width: 64px;
+  overflow: hidden;
+  color: var(--blue);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 950;
+}
+
+.notification-list-copy {
+  min-width: 0;
+}
+
+.notification-list-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.notification-list-badges span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  background: #f1f1f5;
+  color: #555a66;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.notification-list-badges .is-sent {
+  background: #f3f6ff;
+  color: var(--blue);
+}
+
+.notification-list-badges .is-past-label {
+  background: #eeeeee;
+  color: #77777e;
+}
+
+.notification-list-copy h2 {
+  margin: 0 0 6px;
+  color: #1f1f1f;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1.3;
+}
+
+.notification-list-copy p {
+  margin: 0;
+  overflow: hidden;
+  color: #77777e;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.notification-remove-button {
+  justify-self: start;
+  min-height: 48px;
+  border: 1px solid rgba(229, 72, 72, 0.16);
+  border-radius: 999px;
+  background: #fff7f7;
+  color: #e54848;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 950;
+  cursor: pointer;
 }
 
 .selected-artist-panel {
@@ -872,6 +1167,18 @@ button {
   color: #77777e;
   font-size: 12px;
   font-weight: 800;
+}
+
+.selected-artist-description {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #55555b;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.65;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 
 .artist-latest-news {
@@ -1098,6 +1405,14 @@ button {
   position: relative;
   height: 304px;
   border-bottom: 1px solid #eeeeee;
+  overflow: hidden;
+}
+
+.detail-hero-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .detail-body {
@@ -1154,6 +1469,136 @@ button {
   line-height: 1.7;
 }
 
+.notification-button {
+  width: 100%;
+  min-height: 58px;
+  margin-top: 34px;
+  border: 1px solid #e0e2ea;
+  border-radius: 18px;
+  background: #f7f8fb;
+  color: #1f1f1f;
+  font-size: 17px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.notification-button.is-enabled {
+  border-color: rgba(11, 92, 255, 0.22);
+  background: #f3f6ff;
+  color: var(--blue);
+}
+
+.notification-control-detail + .blue-button {
+  margin-top: 12px;
+}
+
+.artist-detail-shell {
+  padding-bottom: 72px;
+}
+
+.artist-detail-hero {
+  position: relative;
+  height: 308px;
+  border-bottom: 1px solid #eeeeee;
+  background: #f3f6ff;
+  overflow: hidden;
+}
+
+.artist-detail-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #f3f6ff;
+  object-fit: cover;
+}
+
+.artist-detail-body {
+  display: grid;
+  gap: 12px;
+  padding: 28px 26px 0;
+}
+
+.artist-source-label {
+  justify-self: start;
+  border-radius: 999px;
+  background: #f3f6ff;
+  color: var(--blue);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.artist-detail-body h1 {
+  margin: 2px 0 0;
+  color: #080808;
+  font-size: 32px;
+  font-weight: 950;
+  line-height: 1.15;
+}
+
+.artist-detail-genres {
+  margin: 0;
+  color: #77777e;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.artist-detail-description {
+  margin: 12px 0 0;
+  color: #1f1f1f;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.68;
+}
+
+.artist-external-link {
+  display: inline-grid;
+  place-items: center;
+  justify-self: start;
+  min-height: 48px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #f1f1f5;
+  color: #1f1f1f;
+  padding: 0 16px;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.artist-follow-button {
+  width: 100%;
+  min-height: 58px;
+  margin-top: 14px;
+  border: 0;
+  border-radius: 18px;
+  background: #1f1f1f;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 950;
+  cursor: pointer;
+  box-shadow: 0 14px 28px rgba(31, 31, 31, 0.14);
+}
+
+.artist-follow-button.is-followed {
+  border: 1px solid #e0e2ea;
+  background: #f7f8fb;
+  color: #1f1f1f;
+  box-shadow: none;
+}
+
+.artist-related-section {
+  margin-top: 42px;
+  padding: 0 26px;
+}
+
+.artist-related-section h2 {
+  margin: 0 0 20px;
+  color: #1f1f1f;
+  font-size: 26px;
+  font-weight: 950;
+}
+
 .not-found {
   display: grid;
   align-content: center;
@@ -1202,11 +1647,20 @@ button {
   .primary-button:hover,
   .social-button:hover,
   .artist-row:hover,
-  .artist-row-profile:hover,
   .follow-action-button:hover,
+  .detail-action-button:hover,
   .calendar-filter-tabs button:hover,
   .calendar-event-card:hover,
+  .calendar-event-main:hover,
+  .calendar-notification-button:hover,
+  .notification-options button:hover,
+  .notification-list-item:hover,
+  .notification-list-main:hover,
+  .notification-remove-button:hover,
   .news-card:hover,
+  .notification-button:hover,
+  .artist-external-link:hover,
+  .artist-follow-button:hover,
   .round-icon-button:hover,
   .icon-button:hover,
   .artist-chip:hover,
@@ -1223,9 +1677,45 @@ button {
     background: #1b6fff;
   }
 
+  .artist-follow-button:hover {
+    background: #303030;
+  }
+
+  .artist-follow-button.is-followed:hover,
+  .artist-external-link:hover {
+    background: #eeeeef;
+    color: #1f1f1f;
+  }
+
+  .profile-logout-button:hover {
+    background: #fff2f2;
+    color: #e54848;
+  }
+
+  .detail-action-button:hover,
+  .calendar-notification-button:hover,
+  .notification-options button:hover,
+  .notification-button:hover {
+    border-color: rgba(11, 92, 255, 0.24);
+    background: #f3f6ff;
+    color: var(--blue);
+  }
+
+  .notification-options .notification-clear-option:hover {
+    border-color: rgba(229, 72, 72, 0.24);
+    background: #fff2f2;
+    color: #e54848;
+  }
+
+  .notification-remove-button:hover {
+    border-color: rgba(229, 72, 72, 0.28);
+    background: #fff2f2;
+  }
+
   .social-button:hover,
   .artist-row:hover,
   .calendar-event-card:hover,
+  .notification-list-item:hover,
   .news-card:hover {
     border-color: #c8c8cf;
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.07);
@@ -1235,11 +1725,20 @@ button {
 .primary-button:active,
 .social-button:active,
 .artist-row:active,
-.artist-row-profile:active,
 .follow-action-button:active,
+.detail-action-button:active,
 .calendar-filter-tabs button:active,
 .calendar-event-card:active,
+.calendar-event-main:active,
+.calendar-notification-button:active,
+.notification-options button:active,
+.notification-list-item:active,
+.notification-list-main:active,
+.notification-remove-button:active,
 .news-card:active,
+.notification-button:active,
+.artist-external-link:active,
+.artist-follow-button:active,
 .round-icon-button:active,
 .icon-button:active,
 .artist-chip:active,
