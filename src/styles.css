@@ -921,6 +921,19 @@ button {
   cursor: pointer;
 }
 
+.external-calendar-button {
+  justify-self: start;
+  min-height: 48px;
+  border: 1px solid rgba(11, 92, 255, 0.2);
+  border-radius: 999px;
+  background: #f3f6ff;
+  color: var(--blue);
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
 .calendar-notification-button.is-enabled {
   border-color: rgba(11, 92, 255, 0.22);
   background: #f3f6ff;
@@ -1566,6 +1579,22 @@ button {
   font-weight: 950;
 }
 
+.artist-image-edit-button {
+  display: inline-grid;
+  place-items: center;
+  justify-self: start;
+  min-height: 48px;
+  margin-top: 4px;
+  border: 1px solid rgba(11, 92, 255, 0.18);
+  border-radius: 999px;
+  background: #f3f6ff;
+  color: var(--blue);
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
 .artist-follow-button {
   width: 100%;
   min-height: 58px;
@@ -1652,6 +1681,7 @@ button {
   .calendar-filter-tabs button:hover,
   .calendar-event-card:hover,
   .calendar-event-main:hover,
+  .external-calendar-button:hover,
   .calendar-notification-button:hover,
   .notification-options button:hover,
   .notification-list-item:hover,
@@ -1660,6 +1690,7 @@ button {
   .news-card:hover,
   .notification-button:hover,
   .artist-external-link:hover,
+  .artist-image-edit-button:hover,
   .artist-follow-button:hover,
   .round-icon-button:hover,
   .icon-button:hover,
@@ -1687,12 +1718,19 @@ button {
     color: #1f1f1f;
   }
 
+  .artist-image-edit-button:hover {
+    border-color: rgba(11, 92, 255, 0.28);
+    background: #edf3ff;
+    color: var(--blue);
+  }
+
   .profile-logout-button:hover {
     background: #fff2f2;
     color: #e54848;
   }
 
   .detail-action-button:hover,
+  .external-calendar-button:hover,
   .calendar-notification-button:hover,
   .notification-options button:hover,
   .notification-button:hover {
@@ -1730,6 +1768,7 @@ button {
 .calendar-filter-tabs button:active,
 .calendar-event-card:active,
 .calendar-event-main:active,
+.external-calendar-button:active,
 .calendar-notification-button:active,
 .notification-options button:active,
 .notification-list-item:active,
@@ -1738,6 +1777,7 @@ button {
 .news-card:active,
 .notification-button:active,
 .artist-external-link:active,
+.artist-image-edit-button:active,
 .artist-follow-button:active,
 .round-icon-button:active,
 .icon-button:active,

@@ -17,6 +17,7 @@ import {
   readSentNotificationIds,
   startNotificationScheduler
 } from "./utils/notificationScheduler";
+import { downloadCalendarEventIcs } from "./utils/ics";
 import type {
   Artist,
   CalendarEvent,
@@ -33,6 +34,7 @@ const NOTIFICATION_STORAGE_KEY = "notificationSettings";
 const LEGACY_NOTIFICATION_STORAGE_KEY = "notificationCalendarEventIds";
 const USER_STORAGE_KEY = "goyoUsers";
 const ARTIST_SEARCH_CACHE_STORAGE_KEY = "artistSearchCache";
+const ARTIST_IMAGE_OVERRIDES_STORAGE_KEY = "artistImageOverrides";
 const MIN_REMOTE_SEARCH_LENGTH = 2;
 
 type Screen =
@@ -53,6 +55,7 @@ type StoredUser = {
   email: string;
   password: string;
 };
+type ArtistImageOverrides = Record<string, string>;
 
 const CATEGORY_LABELS: Record<NewsCategory, string> = {
   CONCERT: "CONCERT",
@@ -198,6 +201,26 @@ function getNewsInfoRows(news: MusicNews) {
   }
 
   return rows.length > 0 ? rows : [{ label: "일정", value: "일정 미정" }];
+}
+
+function getCalendarEventIcsDetails(calendarEvent: CalendarEvent) {
+  const sourceNews = musicNews.find((news) => news.id === calendarEvent.musicNewsId);
+
+  return {
+    description: sourceNews?.description ?? calendarEvent.title,
+    location: sourceNews?.venue ?? ""
+  };
+}
+
+function downloadExternalCalendarEvent(calendarEvent: CalendarEvent) {
+  const downloaded = downloadCalendarEventIcs(
+    calendarEvent,
+    getCalendarEventIcsDetails(calendarEvent)
+  );
+
+  if (!downloaded) {
+    alert("일정 날짜가 없어 캘린더에 추가할 수 없어요.");
+  }
 }
 
 function isSameDate(a: Date, b: Date) {
@@ -376,6 +399,36 @@ function saveArtistSearchCache(cache: Record<string, Artist[]>) {
   window.localStorage.setItem(ARTIST_SEARCH_CACHE_STORAGE_KEY, JSON.stringify(cache));
 }
 
+function readArtistImageOverrides(): ArtistImageOverrides {
+  try {
+    const stored = window.localStorage.getItem(ARTIST_IMAGE_OVERRIDES_STORAGE_KEY);
+    if (!stored) {
+      return {};
+    }
+
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.entries(parsed).reduce<ArtistImageOverrides>((overrides, [artistId, imageUrl]) => {
+      if (typeof imageUrl === "string" && imageUrl.trim()) {
+        overrides[artistId] = imageUrl.trim();
+      }
+
+      return overrides;
+    }, {});
+  } catch {
+    window.localStorage.removeItem(ARTIST_IMAGE_OVERRIDES_STORAGE_KEY);
+  }
+
+  return {};
+}
+
+function saveArtistImageOverrides(overrides: ArtistImageOverrides) {
+  window.localStorage.setItem(ARTIST_IMAGE_OVERRIDES_STORAGE_KEY, JSON.stringify(overrides));
+}
+
 function saveNotificationSettings(settings: NotificationSettings) {
   window.localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify(settings));
   window.localStorage.removeItem(LEGACY_NOTIFICATION_STORAGE_KEY);
@@ -544,8 +597,8 @@ function getArtistAvatarColor(artistId: string) {
   return palette[colorIndex];
 }
 
-function getSafeArtistImageUrl(imageUrl: string) {
-  return imageUrl.trim() || ARTIST_IMAGE_PLACEHOLDER;
+function getSafeArtistImageUrl(artist: Artist, imageOverrides: ArtistImageOverrides) {
+  return imageOverrides[artist.id]?.trim() || artist.imageUrl.trim() || ARTIST_IMAGE_PLACEHOLDER;
 }
 
 function App() {
@@ -556,6 +609,9 @@ function App() {
   const [detailBackScreen, setDetailBackScreen] = useState<DetailBackScreen>("home");
   const [currentUser, setCurrentUser] = useState<StoredUser | null>(null);
   const [followedArtists, setFollowedArtists] = useState<Artist[]>(readFollowedArtists);
+  const [artistImageOverrides, setArtistImageOverrides] = useState<ArtistImageOverrides>(
+    readArtistImageOverrides
+  );
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
     readNotificationSettings
   );
@@ -568,6 +624,10 @@ function App() {
   useEffect(() => {
     saveFollowedArtists(followedArtists);
   }, [followedArtists]);
+
+  useEffect(() => {
+    saveArtistImageOverrides(artistImageOverrides);
+  }, [artistImageOverrides]);
 
   useEffect(() => {
     saveNotificationSettings(notificationSettings);
@@ -612,6 +672,22 @@ function App() {
 
       saveFollowedArtists(nextArtists);
       return nextArtists;
+    });
+  };
+
+  const updateArtistImageOverride = (artistId: string, imageUrl: string) => {
+    setArtistImageOverrides((currentOverrides) => {
+      const nextOverrides = { ...currentOverrides };
+      const trimmedUrl = imageUrl.trim();
+
+      if (trimmedUrl) {
+        nextOverrides[artistId] = trimmedUrl;
+      } else {
+        delete nextOverrides[artistId];
+      }
+
+      saveArtistImageOverrides(nextOverrides);
+      return nextOverrides;
     });
   };
 
@@ -699,6 +775,7 @@ function App() {
       <HomeScreen
         followedArtists={followedArtists}
         followedArtistIds={followedArtistIds}
+        artistImageOverrides={artistImageOverrides}
         onToggleFollowArtist={toggleFollowArtist}
         onOpenDetail={(newsId) => openDetail(newsId, "home")}
         onOpenArtistDetail={openArtistDetail}
@@ -719,8 +796,10 @@ function App() {
       <ArtistDetailScreen
         artist={artist ?? undefined}
         followed={artist ? followedArtistIds.includes(artist.id) : false}
+        artistImageOverrides={artistImageOverrides}
         onBack={() => showScreen("home")}
         onToggleFollowArtist={toggleFollowArtist}
+        onUpdateImageOverride={updateArtistImageOverride}
         onOpenRelatedNews={(newsId) => openDetail(newsId, "artistDetail")}
       />
     );
@@ -732,6 +811,7 @@ function App() {
         user={currentUser}
         followedArtists={followedArtists}
         followedArtistIds={followedArtistIds}
+        artistImageOverrides={artistImageOverrides}
         onBack={() => showScreen("home")}
         onLogout={handleLogout}
       />
@@ -1034,11 +1114,19 @@ type ProfileScreenProps = {
   user: StoredUser | null;
   followedArtists: Artist[];
   followedArtistIds: string[];
+  artistImageOverrides: ArtistImageOverrides;
   onBack: () => void;
   onLogout: () => void;
 };
 
-function ProfileScreen({ user, followedArtists, followedArtistIds, onBack, onLogout }: ProfileScreenProps) {
+function ProfileScreen({
+  user,
+  followedArtists,
+  followedArtistIds,
+  artistImageOverrides,
+  onBack,
+  onLogout
+}: ProfileScreenProps) {
   const followedNewsCount = useMemo(
     () => musicNews.filter((news) => followedArtistIds.includes(news.artistId)).length,
     [followedArtistIds]
@@ -1077,7 +1165,7 @@ function ProfileScreen({ user, followedArtists, followedArtistIds, onBack, onLog
           <div className="profile-artist-list">
             {followedArtists.map((artist) => (
               <div className="profile-artist-item" key={artist.id}>
-                <Avatar artist={artist} size="small" />
+                <Avatar artist={artist} imageOverrides={artistImageOverrides} size="small" />
                 <div>
                   <strong>{artist.name}</strong>
                   <span>{getArtistGenresLabel(artist)}</span>
@@ -1105,6 +1193,7 @@ function ProfileScreen({ user, followedArtists, followedArtistIds, onBack, onLog
 type HomeScreenProps = {
   followedArtists: Artist[];
   followedArtistIds: string[];
+  artistImageOverrides: ArtistImageOverrides;
   onToggleFollowArtist: (artist: Artist) => void;
   onOpenDetail: (newsId: string) => void;
   onOpenArtistDetail: (artist: Artist) => void;
@@ -1116,6 +1205,7 @@ type HomeScreenProps = {
 function HomeScreen({
   followedArtists,
   followedArtistIds,
+  artistImageOverrides,
   onToggleFollowArtist,
   onOpenDetail,
   onOpenArtistDetail,
@@ -1301,6 +1391,7 @@ function HomeScreen({
                 key={artist.id}
                 artist={artist}
                 followed={followedArtistIds.includes(artist.id)}
+                imageOverrides={artistImageOverrides}
                 onSelect={handleSearchResultSelect}
                 onToggleFollow={handleSearchFollowButtonClick}
               />
@@ -1326,7 +1417,7 @@ function HomeScreen({
                 type="button"
                 onClick={(event) => handleFollowedArtistClick(artist, event)}
               >
-                <Avatar artist={artist} size="large" />
+                <Avatar artist={artist} imageOverrides={artistImageOverrides} size="large" />
                 <span>{artist.name}</span>
               </button>
             ))}
@@ -1342,6 +1433,7 @@ function HomeScreen({
       {selectedArtist && (
         <SelectedArtistPanel
           artist={selectedArtist}
+          imageOverrides={artistImageOverrides}
           newsItems={followedNews.filter((news) => news.artistId === selectedArtist.id)}
           onClear={() => setSelectedArtistId(null)}
           onOpenDetail={onOpenDetail}
@@ -1388,6 +1480,7 @@ function HomeScreen({
 type ArtistSearchRowProps = {
   artist: Artist;
   followed: boolean;
+  imageOverrides: ArtistImageOverrides;
   onSelect: (artist: Artist, event: MouseEvent<HTMLButtonElement>) => void;
   onToggleFollow: (artist: Artist, event: MouseEvent<HTMLButtonElement>) => void;
 };
@@ -1395,6 +1488,7 @@ type ArtistSearchRowProps = {
 function ArtistSearchRow({
   artist,
   followed,
+  imageOverrides,
   onSelect,
   onToggleFollow
 }: ArtistSearchRowProps) {
@@ -1403,7 +1497,7 @@ function ArtistSearchRow({
       <div
         className="artist-row-profile"
       >
-        <Avatar artist={artist} size="small" />
+        <Avatar artist={artist} imageOverrides={imageOverrides} size="small" />
         <span className="artist-row-copy">
           <strong>{artist.name}</strong>
           <span>{getArtistGenresLabel(artist)}</span>
@@ -1441,9 +1535,17 @@ function SearchLoadingState() {
   );
 }
 
-function Avatar({ artist, size }: { artist: Artist; size: "small" | "large" }) {
+function Avatar({
+  artist,
+  imageOverrides,
+  size
+}: {
+  artist: Artist;
+  imageOverrides: ArtistImageOverrides;
+  size: "small" | "large";
+}) {
   const initials = getArtistInitials(artist.name);
-  const imageUrl = getSafeArtistImageUrl(artist.imageUrl);
+  const imageUrl = getSafeArtistImageUrl(artist, imageOverrides);
 
   return (
     <span
@@ -1465,11 +1567,19 @@ function Avatar({ artist, size }: { artist: Artist; size: "small" | "large" }) {
   );
 }
 
-function ArtistImage({ artist, className }: { artist: Artist; className: string }) {
+function ArtistImage({
+  artist,
+  imageOverrides,
+  className
+}: {
+  artist: Artist;
+  imageOverrides: ArtistImageOverrides;
+  className: string;
+}) {
   return (
     <img
       className={className}
-      src={getSafeArtistImageUrl(artist.imageUrl)}
+      src={getSafeArtistImageUrl(artist, imageOverrides)}
       alt={`${artist.name} 이미지`}
       draggable={false}
       onError={(event) => {
@@ -1482,6 +1592,7 @@ function ArtistImage({ artist, className }: { artist: Artist; className: string 
 
 type SelectedArtistPanelProps = {
   artist: Artist;
+  imageOverrides: ArtistImageOverrides;
   newsItems: MusicNews[];
   onClear: () => void;
   onOpenDetail: (newsId: string) => void;
@@ -1489,6 +1600,7 @@ type SelectedArtistPanelProps = {
 
 function SelectedArtistPanel({
   artist,
+  imageOverrides,
   newsItems,
   onClear,
   onOpenDetail
@@ -1498,7 +1610,7 @@ function SelectedArtistPanel({
   return (
     <section className="selected-artist-panel" aria-label={`${artist.name} 정보`}>
       <div className="selected-artist-main">
-        <Avatar artist={artist} size="small" />
+        <Avatar artist={artist} imageOverrides={imageOverrides} size="small" />
         <div>
           <span>팔로우 중</span>
           <h3>{artist.name}</h3>
@@ -1545,16 +1657,20 @@ function SelectedArtistPanel({
 type ArtistDetailScreenProps = {
   artist?: Artist;
   followed: boolean;
+  artistImageOverrides: ArtistImageOverrides;
   onBack: () => void;
   onToggleFollowArtist: (artist: Artist) => void;
+  onUpdateImageOverride: (artistId: string, imageUrl: string) => void;
   onOpenRelatedNews: (newsId: string) => void;
 };
 
 function ArtistDetailScreen({
   artist,
   followed,
+  artistImageOverrides,
   onBack,
   onToggleFollowArtist,
+  onUpdateImageOverride,
   onOpenRelatedNews
 }: ArtistDetailScreenProps) {
   const relatedNews = useMemo(
@@ -1591,7 +1707,11 @@ function ArtistDetailScreen({
           <ArrowLeft size={24} aria-hidden="true" />
           <span className="sr-only">뒤로가기</span>
         </button>
-        <ArtistImage artist={artist} className="artist-detail-image" />
+        <ArtistImage
+          artist={artist}
+          imageOverrides={artistImageOverrides}
+          className="artist-detail-image"
+        />
       </section>
 
       <section className="artist-detail-body">
@@ -1614,6 +1734,25 @@ function ArtistDetailScreen({
             공식 사이트 보기
           </a>
         )}
+
+        <button
+          className="artist-image-edit-button"
+          type="button"
+          onClick={() => {
+            const nextImageUrl = window.prompt(
+              "아티스트 이미지 URL을 입력해주세요. 비워두면 직접 설정한 이미지가 제거됩니다.",
+              artistImageOverrides[artist.id] ?? ""
+            );
+
+            if (nextImageUrl === null) {
+              return;
+            }
+
+            onUpdateImageOverride(artist.id, nextImageUrl);
+          }}
+        >
+          이미지 수정
+        </button>
 
         <button
           className={`artist-follow-button ${followed ? "is-followed" : ""}`}
@@ -1813,6 +1952,17 @@ function CalendarEventCard({
           <h3>{event.title}</h3>
           <p>{sourceNews?.venue ?? sourceNews?.subtitle ?? "일정 상세"}</p>
         </div>
+      </button>
+
+      <button
+        className="external-calendar-button"
+        type="button"
+        onClick={(clickEvent) => {
+          clickEvent.stopPropagation();
+          downloadExternalCalendarEvent(event);
+        }}
+      >
+        외부 캘린더에 추가
       </button>
 
       <NotificationControls
@@ -2069,6 +2219,11 @@ function DetailScreen({
     );
   }
 
+  const downloadableCalendarEvent =
+    calendarEvent ??
+    calendarEvents.find((event) => event.musicNewsId === news.id && event.type !== "TICKET_OPEN") ??
+    calendarEvents.find((event) => event.musicNewsId === news.id);
+
   return (
     <main className="app-shell detail-shell">
       <section className="detail-hero" style={{ backgroundColor: getNewsHeroColor(news) }}>
@@ -2119,9 +2274,16 @@ function DetailScreen({
         <button
           className="primary-button blue-button"
           type="button"
-          onClick={() => alert("캘린더에 추가되었습니다.")}
+          onClick={() => {
+            if (downloadableCalendarEvent) {
+              downloadExternalCalendarEvent(downloadableCalendarEvent);
+              return;
+            }
+
+            alert("일정 날짜가 없어 캘린더에 추가할 수 없어요.");
+          }}
         >
-          캘린더에 추가하기
+          외부 캘린더에 추가
         </button>
       </section>
     </main>
