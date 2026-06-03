@@ -1,7 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
-  <title id="title">GOYO</title>
-  <desc id="desc">Blue GOYO app icon</desc>
-  <rect width="512" height="512" rx="112" fill="#0B5CFF"/>
-  <circle cx="256" cy="256" r="164" fill="#FFFFFF" opacity="0.14"/>
-  <path fill="#FFFFFF" d="M128 252c0-60 44-104 107-104 36 0 66 14 86 38l-39 34c-12-14-26-21-45-21-31 0-52 22-52 53s21 53 53 53c14 0 27-3 38-11v-25h-47v-45h100v96c-24 22-58 35-94 35-63 0-107-44-107-103Zm222-97h56v193h-56V155Z"/>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="112" fill="#F6F3EE"/>
+  <circle cx="256" cy="256" r="150" fill="#111827"/>
+  <circle cx="256" cy="256" r="92" fill="#F6F3EE"/>
+  <path d="M256 134C323.4 134 378 188.6 378 256H322C322 219.5 292.5 190 256 190V134Z" fill="#D95F43"/>
 </svg>

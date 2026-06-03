@@ -1,24 +1,23 @@
 {
   "name": "goyo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --configLoader native",
-    "build": "tsc -b && vite build --configLoader native",
-    "preview": "vite preview --host 0.0.0.0 --configLoader native"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "lucide-react": "^0.468.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@supabase/supabase-js": "^2.107.0",
+    "framer-motion": "^12.40.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.16.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "typescript": "^5.6.0",
-    "vite": "^6.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16",
     "vite-plugin-pwa": "^1.3.0"
   }
 }

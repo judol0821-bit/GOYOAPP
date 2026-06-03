@@ -1,56 +1,37 @@
-import { defineConfig } from "vite";
-import { VitePWA } from "vite-plugin-pwa";
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   plugins: [
+    react(),
     VitePWA({
-      registerType: "autoUpdate",
+      registerType: 'autoUpdate',
+      injectRegister: 'auto',
+      includeAssets: ['goyo-icon.svg'],
       manifest: {
-        name: "GOYO",
-        short_name: "GOYO",
-        description: "조용하게 음악 소식을 확인하는 앱",
-        theme_color: "#0B5CFF",
-        background_color: "#FFFFFF",
-        display: "standalone",
-        start_url: "/",
-        scope: "/",
-        lang: "ko",
+        name: 'GOYO',
+        short_name: 'GOYO',
+        description: 'GOYO mobile PWA',
+        theme_color: '#111111',
+        background_color: '#F7F4EF',
+        display: 'standalone',
+        start_url: '/',
+        scope: '/',
         icons: [
           {
-            src: "/goyo-icon.svg",
-            sizes: "any",
-            type: "image/svg+xml",
-            purpose: "any"
+            src: '/goyo-icon.svg',
+            sizes: 'any',
+            type: 'image/svg+xml',
+            purpose: 'any maskable',
           },
-          {
-            src: "/pwa-192x192.png",
-            sizes: "192x192",
-            type: "image/png",
-            purpose: "any"
-          },
-          {
-            src: "/pwa-512x512.png",
-            sizes: "512x512",
-            type: "image/png",
-            purpose: "any"
-          },
-          {
-            src: "/maskable-512x512.png",
-            sizes: "512x512",
-            type: "image/png",
-            purpose: "maskable"
-          }
-        ]
+        ],
       },
       workbox: {
-        globPatterns: ["**/*.{js,css,html,svg,png,ico}"],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
-        skipWaiting: true
+        skipWaiting: true,
       },
-      devOptions: {
-        enabled: true
-      }
-    })
-  ]
+    }),
+  ],
 });
