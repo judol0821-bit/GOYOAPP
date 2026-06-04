@@ -6,8 +6,10 @@ import { clearHiddenNews as clearRemoteHiddenNews, getHiddenNews } from '../api/
 import { testSpotifyConnection } from '../api/spotify.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import useLocalStorage from '../hooks/useLocalStorage.js';
+import useOnlineStatus from '../hooks/useOnlineStatus.js';
 import { testSupabaseConnection } from '../lib/supabase.js';
 import { getAnonymousUserId } from '../utils/anonymousUser.js';
+import { getSafeArtistSnapshots } from '../utils/artistSnapshots.js';
 import { getSafeCalendarEvents } from '../utils/calendarEvents.js';
 
 export default function MyPage() {
@@ -25,17 +27,37 @@ export default function MyPage() {
     status: 'checking',
   });
   const [followedArtistIds, , clearFollowedArtistIds] = useLocalStorage('followedArtistIds', []);
+  const [followedArtistSnapshots, , clearFollowedArtistSnapshots] = useLocalStorage('followedArtistSnapshots', []);
   const [hiddenNewsIds, , clearHiddenNewsIds] = useLocalStorage('hiddenNewsIds', []);
   const [calendarEvents, , clearCalendarEvents] = useLocalStorage('calendarEvents', []);
+  const [, , clearCachedNewsItems] = useLocalStorage('cachedNewsItems', []);
+  const [, , clearCachedPreviewNews] = useLocalStorage('cachedPreviewNews', []);
 
   const anonymousUserId = useMemo(() => getAnonymousUserId(), []);
+  const isOnline = useOnlineStatus();
   const safeFollowedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
+  const safeArtistSnapshots = getSafeArtistSnapshots(followedArtistSnapshots);
   const safeHiddenNewsIds = Array.isArray(hiddenNewsItems ?? hiddenNewsIds) ? hiddenNewsItems ?? hiddenNewsIds : [];
   const safeCalendarEvents = getSafeCalendarEvents(calendarItems ?? calendarEvents);
   const followedArtistIdsKey = safeFollowedArtistIds.join('|');
+  const followedArtistSnapshotsKey = safeArtistSnapshots
+    .map((artist) => `${artist.id}:${artist.externalId}`)
+    .join('|');
 
   useEffect(() => {
     let isCancelled = false;
+
+    if (!isOnline) {
+      setSupabaseStatus({
+        message: '오프라인 모드',
+        status: 'offline',
+      });
+      setSpotifyStatus({
+        message: 'cached 데이터 사용 중',
+        status: 'offline',
+      });
+      return undefined;
+    }
 
     testSupabaseConnection().then((status) => {
       if (!isCancelled) {
@@ -52,7 +74,7 @@ export default function MyPage() {
     return () => {
       isCancelled = true;
     };
-  }, []);
+  }, [isOnline]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -83,12 +105,26 @@ export default function MyPage() {
       return undefined;
     }
 
-    setIsLoadingArtists(true);
+    const cachedArtists = safeArtistSnapshots.filter(
+      (artist) => safeFollowedArtistIds.includes(artist.id) || safeFollowedArtistIds.includes(artist.externalId),
+    );
+
+    if (cachedArtists.length > 0) {
+      setArtistItems(cachedArtists);
+    }
+
+    if (!isOnline) {
+      setIsLoadingArtists(false);
+      return undefined;
+    }
+
+    setIsLoadingArtists(cachedArtists.length === 0);
 
     Promise.all(safeFollowedArtistIds.map((artistId) => getArtistById(artistId)))
       .then((artists) => {
         if (!isCancelled) {
-          setArtistItems(artists.filter(Boolean));
+          const nextArtists = artists.filter(Boolean);
+          setArtistItems(nextArtists.length > 0 ? nextArtists : cachedArtists);
           setIsLoadingArtists(false);
         }
       })
@@ -102,13 +138,15 @@ export default function MyPage() {
     return () => {
       isCancelled = true;
     };
-  }, [followedArtistIdsKey]);
+  }, [followedArtistIdsKey, followedArtistSnapshotsKey, isOnline]);
 
   const followedArtists = useMemo(() => {
     const seenIds = new Set();
 
     return artistItems.filter((artist) => {
-      if (!artist?.id || seenIds.has(artist.id) || !safeFollowedArtistIds.includes(artist.id)) {
+      const isFollowed = safeFollowedArtistIds.includes(artist.id) || safeFollowedArtistIds.includes(artist.externalId);
+
+      if (!artist?.id || seenIds.has(artist.id) || !isFollowed) {
         return false;
       }
 
@@ -127,8 +165,11 @@ export default function MyPage() {
     await Promise.all([clearRemoteCalendarEvents(anonymousUserId), clearRemoteHiddenNews(anonymousUserId)]);
 
     clearFollowedArtistIds();
+    clearFollowedArtistSnapshots();
     clearHiddenNewsIds();
     clearCalendarEvents();
+    clearCachedNewsItems();
+    clearCachedPreviewNews();
     setArtistItems([]);
     setCalendarItems([]);
     setHiddenNewsItems([]);
@@ -197,8 +238,8 @@ export default function MyPage() {
         </button>
       </section>
 
-      <p className={`my-supabase-status is-${supabaseStatus.status}`}>
-        {supabaseStatus.message} / {spotifyStatus.message}
+      <p className={`my-supabase-status is-${isOnline ? supabaseStatus.status : 'offline'}`}>
+        {isOnline ? `${supabaseStatus.message} / ${spotifyStatus.message}` : '오프라인 모드'}
       </p>
     </main>
   );

@@ -1,18 +1,68 @@
 import { mockNews } from '../data/mockNews.js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase.js';
+import { isBrowserOffline } from '../utils/network.js';
+import { filterCachedNewsByArtistIds, findCachedNewsById, readAllCachedNewsItems } from '../utils/newsCache.js';
 import { apiFetch, hasApiBaseUrl } from './client.js';
 import { dedupeNewsItems, isUuid, mapNewsFromSupabase } from './mappers.js';
 import { getCachedSpotifyNewsById, getSpotifyArtistAlbums } from './spotify.js';
 
 const MOCK_ARTIST_IDS = new Set(mockNews.map((news) => news.artistId).filter(Boolean));
 
+const KNOWN_SPOTIFY_ARTIST_IDS = {
+  'mock:iu': '3HqSLMAZ3g3d5poNaI7GOU',
+  iu: '3HqSLMAZ3g3d5poNaI7GOU',
+  '아이유': '3HqSLMAZ3g3d5poNaI7GOU',
+  'mock:newjeans': '6HvZYsbFfjnjFrWF950C9d',
+  newjeans: '6HvZYsbFfjnjFrWF950C9d',
+  '뉴진스': '6HvZYsbFfjnjFrWF950C9d',
+  'mock:hyukoh': '57okaLdCtv3nVBSn5otJkp',
+  hyukoh: '57okaLdCtv3nVBSn5otJkp',
+  '혁오': '57okaLdCtv3nVBSn5otJkp',
+  'mock:jannabi': '2SY6OktZyMLdOnscX3DCyS',
+  jannabi: '2SY6OktZyMLdOnscX3DCyS',
+  '잔나비': '2SY6OktZyMLdOnscX3DCyS',
+  'mock:baekyerin': '6dhfy4ByARPJdPtMyrUYJK',
+  baekyerin: '6dhfy4ByARPJdPtMyrUYJK',
+  '백예린': '6dhfy4ByARPJdPtMyrUYJK',
+};
+
 const getUniqueNews = (newsItems) => {
   return dedupeNewsItems(newsItems);
 };
 
-const getNewsSortValue = (news) => news.createdAt || `${news.date || ''}T${news.startTime || '00:00'}:00`;
+const getNewsSortValue = (news) => String(news?.createdAt || `${news?.date || ''}T${news?.startTime || '00:00'}:00`);
 
 const sortByCreatedAtDesc = (a, b) => getNewsSortValue(b).localeCompare(getNewsSortValue(a));
+
+const normalizeLookupText = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+
+const getKnownSpotifyArtistId = (artist) => {
+  const candidates = [artist?.external_id, artist?.externalId, artist?.id, artist?.name]
+    .map(normalizeLookupText)
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (KNOWN_SPOTIFY_ARTIST_IDS[candidate]) {
+      return KNOWN_SPOTIFY_ARTIST_IDS[candidate];
+    }
+  }
+
+  return '';
+};
+
+const getSpotifyArtistIdForArtist = (artist) => {
+  if (artist?.source === 'spotify' && artist.external_id) {
+    return artist.external_id;
+  }
+
+  return getKnownSpotifyArtistId(artist);
+};
+
+const debugNewsFlow = (payload) => {
+  if (import.meta.env?.DEV) {
+    console.log('[GOYO news]', payload);
+  }
+};
 
 const unwrapNewsList = (payload) => {
   if (Array.isArray(payload)) {
@@ -44,6 +94,20 @@ const filterByArtistIds = (newsItems, artistIds) => {
     .sort(sortByCreatedAtDesc);
 };
 
+const getCachedNewsByArtistIds = (artistIds) => {
+  return filterCachedNewsByArtistIds(readAllCachedNewsItems(), artistIds).sort(sortByCreatedAtDesc);
+};
+
+const getFallbackNewsByArtistIds = (artistIds) => {
+  const cachedNews = getCachedNewsByArtistIds(artistIds);
+
+  if (cachedNews.length > 0) {
+    return cachedNews;
+  }
+
+  return filterByArtistIds(mockNews, artistIds);
+};
+
 const resolveSupabaseArtistIds = async (artistIds) => {
   const frontendArtistIdBySupabaseId = new Map();
   const spotifyArtistIdByFrontendId = new Map();
@@ -58,7 +122,7 @@ const resolveSupabaseArtistIds = async (artistIds) => {
   if (uuidIds.length > 0) {
     const { data, error } = await supabase
       .from('artists')
-      .select('id, external_id, source')
+      .select('id, external_id, name, source')
       .in('id', uuidIds);
 
     if (error) {
@@ -66,8 +130,10 @@ const resolveSupabaseArtistIds = async (artistIds) => {
     }
 
     (data || []).forEach((artist) => {
-      if (artist.source === 'spotify' && artist.external_id) {
-        spotifyArtistIdByFrontendId.set(artist.external_id, artist.id);
+      const spotifyArtistId = getSpotifyArtistIdForArtist(artist);
+
+      if (spotifyArtistId) {
+        spotifyArtistIdByFrontendId.set(spotifyArtistId, artist.id);
       }
     });
   }
@@ -76,7 +142,7 @@ const resolveSupabaseArtistIds = async (artistIds) => {
     const externalIds = legacyIds.flatMap((artistId) => [artistId, `mock:${artistId}`]);
     const { data, error } = await supabase
       .from('artists')
-      .select('id, external_id, source')
+      .select('id, external_id, name, source')
       .in('external_id', externalIds);
 
     if (error) {
@@ -90,9 +156,10 @@ const resolveSupabaseArtistIds = async (artistIds) => {
 
       if (matchedLegacyId) {
         frontendArtistIdBySupabaseId.set(artist.id, matchedLegacyId);
+        const spotifyArtistId = getSpotifyArtistIdForArtist(artist);
 
-        if (artist.source === 'spotify' && artist.external_id) {
-          spotifyArtistIdByFrontendId.set(artist.external_id, matchedLegacyId);
+        if (spotifyArtistId) {
+          spotifyArtistIdByFrontendId.set(spotifyArtistId, matchedLegacyId);
         }
       }
     });
@@ -112,22 +179,36 @@ const resolveSupabaseArtistIds = async (artistIds) => {
 };
 
 const loadSpotifyAlbumNews = async (spotifyArtistIdByFrontendId) => {
+  if (!(spotifyArtistIdByFrontendId instanceof Map)) {
+    return [];
+  }
+
   const entries = Array.from(spotifyArtistIdByFrontendId.entries()).filter(([spotifyArtistId]) => spotifyArtistId);
 
   if (entries.length === 0) {
     return [];
   }
 
-  const newsGroups = await Promise.all(
-    entries.map(async ([spotifyArtistId, frontendArtistId]) => {
-      const albums = await getSpotifyArtistAlbums(spotifyArtistId);
+  const newsGroups = [];
 
-      return albums.map((news) => ({
-        ...news,
-        artistId: frontendArtistId || news.artistId || spotifyArtistId,
-      }));
-    }),
-  );
+  for (const [spotifyArtistId, frontendArtistId] of entries) {
+    try {
+      const albums = await getSpotifyArtistAlbums(spotifyArtistId);
+      const safeAlbums = Array.isArray(albums) ? albums : [];
+
+      newsGroups.push(
+        safeAlbums
+          .filter(Boolean)
+          .map((news) => ({
+            ...news,
+            artistId: frontendArtistId || news.artistId || spotifyArtistId,
+          })),
+      );
+    } catch (error) {
+      console.warn('Failed to load Spotify album news for artist.', { spotifyArtistId, error });
+      newsGroups.push([]);
+    }
+  }
 
   return getUniqueNews(newsGroups.flat()).sort(sortByCreatedAtDesc);
 };
@@ -137,6 +218,10 @@ export async function getNewsByFollowedArtists(artistIds) {
 
   if (safeArtistIds.length === 0) {
     return [];
+  }
+
+  if (isBrowserOffline()) {
+    return getFallbackNewsByArtistIds(safeArtistIds);
   }
 
   if (isSupabaseConfigured()) {
@@ -165,13 +250,32 @@ export async function getNewsByFollowedArtists(artistIds) {
         );
       }
 
-      const spotifyNews = await loadSpotifyAlbumNews(spotifyArtistIdByFrontendId);
-      const mergedNews = getUniqueNews([...supabaseNews, ...spotifyNews]).sort(sortByCreatedAtDesc);
+      let spotifyNews = [];
 
-      return filterByArtistIds(mergedNews, safeArtistIds);
+      try {
+        spotifyNews = await loadSpotifyAlbumNews(spotifyArtistIdByFrontendId);
+      } catch (error) {
+        console.warn('Failed to merge Spotify album news. Continuing with Supabase news.', error);
+      }
+
+      const mergedNews = getUniqueNews([...supabaseNews, ...spotifyNews]).sort(sortByCreatedAtDesc);
+      const filteredNews = filterByArtistIds(mergedNews, safeArtistIds);
+
+      debugNewsFlow({
+        followedArtistIds: safeArtistIds,
+        supabaseArtistIds,
+        spotifyArtistIds: Array.from(spotifyArtistIdByFrontendId.keys()),
+        followedArtistsWithSpotifyAlbums: Array.from(spotifyArtistIdByFrontendId.values()),
+        supabaseNewsCount: supabaseNews.length,
+        spotifyAlbumNewsCount: spotifyNews.length,
+        mergedNewsCount: mergedNews.length,
+        filteredNewsCount: filteredNews.length,
+      });
+
+      return filteredNews;
     } catch (error) {
       console.error('Failed to load Supabase news.', error);
-      return filterByArtistIds(mockNews, safeArtistIds);
+      return getFallbackNewsByArtistIds(safeArtistIds);
     }
   }
 
@@ -182,11 +286,11 @@ export async function getNewsByFollowedArtists(artistIds) {
       return filterByArtistIds(unwrapNewsList(payload), safeArtistIds);
     } catch {
       console.error('Failed to load REST news.');
-      return filterByArtistIds(mockNews, safeArtistIds);
+      return getFallbackNewsByArtistIds(safeArtistIds);
     }
   }
 
-  return filterByArtistIds(mockNews, safeArtistIds);
+  return getFallbackNewsByArtistIds(safeArtistIds);
 }
 
 export async function getNewsById(id) {
@@ -198,6 +302,16 @@ export async function getNewsById(id) {
 
   if (cachedSpotifyNews) {
     return cachedSpotifyNews;
+  }
+
+  const cachedNews = findCachedNewsById(id);
+
+  if (cachedNews) {
+    return cachedNews;
+  }
+
+  if (isBrowserOffline()) {
+    return getUniqueNews(mockNews).find((news) => news.id === id) || null;
   }
 
   if (isSupabaseConfigured() && isUuid(id)) {

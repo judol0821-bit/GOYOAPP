@@ -8,10 +8,23 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="GOYO" />
     <link rel="icon" type="image/svg+xml" href="/goyo-icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>GOYO</title>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      if (
+        ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname) &&
+        'serviceWorker' in navigator
+      ) {
+        navigator.serviceWorker.getRegistrations().then(function (registrations) {
+          registrations.forEach(function (registration) {
+            registration.unregister();
+          });
+        }).catch(function () {});
+      }
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

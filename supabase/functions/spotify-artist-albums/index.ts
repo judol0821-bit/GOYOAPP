@@ -6,6 +6,17 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
+const knownArtistNamesById: Record<string, string> = {
+  '3HqSLMAZ3g3d5poNaI7GOU': 'IU',
+  '6HvZYsbFfjnjFrWF950C9d': 'NewJeans',
+  '57okaLdCtv3nVBSn5otJkp': 'HYUKOH',
+  '2SY6OktZyMLdOnscX3DCyS': 'JANNABI',
+  '6dhfy4ByARPJdPtMyrUYJK': 'Yerin Baek',
+  '6WeDO4GynFmK4OxwkBzMW8': 'The Black Skirts',
+  '2kxVxKOgoefmgkwoHipHsn': 'Silica Gel',
+  '5069JTmv5ZDyPeZaCCXiCg': 'wave to earth',
+};
+
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -82,6 +93,9 @@ const normalizeReleaseDate = (releaseDate: unknown) => {
   return new Date().toISOString().slice(0, 10);
 };
 
+const normalizeText = (value: unknown) =>
+  typeof value === 'string' ? value.toLowerCase().replace(/\s+/g, ' ').trim() : '';
+
 const getSpotifyToken = async () => {
   const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');
   const clientSecret = Deno.env.get('SPOTIFY_CLIENT_SECRET');
@@ -138,6 +152,82 @@ const mapAlbum = (album: any, fallbackArtistId: string) => {
   };
 };
 
+const dedupeAlbums = (albums: any[]) => {
+  const seenIds = new Set<string>();
+
+  return albums.filter((album) => {
+    const id = typeof album?.id === 'string' ? album.id : '';
+
+    if (!id || seenIds.has(id)) {
+      return false;
+    }
+
+    seenIds.add(id);
+    return true;
+  });
+};
+
+const getKnownArtistName = (artistId: string) => knownArtistNamesById[artistId] || '';
+
+const fetchArtistName = async (accessToken: string, artistId: string) => {
+  const knownName = getKnownArtistName(artistId);
+
+  if (knownName) {
+    return knownName;
+  }
+
+  const artistResponse = await fetch(`https://api.spotify.com/v1/artists/${encodeURIComponent(artistId)}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!artistResponse.ok) {
+    return '';
+  }
+
+  const artist = await artistResponse.json();
+  return typeof artist?.name === 'string' ? artist.name : '';
+};
+
+const fetchAlbumsBySearch = async (accessToken: string, artistId: string) => {
+  const artistName = await fetchArtistName(accessToken, artistId);
+
+  if (!artistName) {
+    return [];
+  }
+
+  const searchUrl = new URL('https://api.spotify.com/v1/search');
+  searchUrl.searchParams.set('q', `artist:"${artistName}"`);
+  searchUrl.searchParams.set('type', 'album');
+  searchUrl.searchParams.set('market', 'KR');
+  searchUrl.searchParams.set('limit', '10');
+
+  const searchResponse = await fetch(searchUrl, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!searchResponse.ok) {
+    return [];
+  }
+
+  const payload = await searchResponse.json();
+  const items = Array.isArray(payload?.albums?.items) ? payload.albums.items : [];
+  const normalizedArtistName = normalizeText(artistName);
+
+  return dedupeAlbums(
+    items.filter((album: any) => {
+      const artists = Array.isArray(album?.artists) ? album.artists : [];
+
+      return artists.some((artist: any) => {
+        return artist?.id === artistId || normalizeText(artist?.name) === normalizedArtistName;
+      });
+    }),
+  );
+};
+
 serve(async (request) => {
   if (request.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -162,7 +252,15 @@ serve(async (request) => {
     });
 
     if (spotifyResponse.status === 429) {
-      return jsonResponse({ news: [], message: 'Spotify rate limited this request.' }, 200);
+      const fallbackAlbums = await fetchAlbumsBySearch(accessToken, artistId);
+      const fallbackNews = fallbackAlbums.map((album) => mapAlbum(album, artistId)).filter((news) => news.id);
+
+      return jsonResponse({
+        news: fallbackNews,
+        message: fallbackNews.length > 0
+          ? 'Spotify albums endpoint was rate limited. Search fallback was used.'
+          : 'Spotify rate limited this request.',
+      }, 200);
     }
 
     if (!spotifyResponse.ok) {
@@ -172,8 +270,9 @@ serve(async (request) => {
 
     const payload = await spotifyResponse.json();
     const items = Array.isArray(payload?.items) ? payload.items : [];
+    const albums = items.length > 0 ? dedupeAlbums(items) : await fetchAlbumsBySearch(accessToken, artistId);
 
-    return jsonResponse({ news: items.map((album) => mapAlbum(album, artistId)).filter((news) => news.id) });
+    return jsonResponse({ news: albums.map((album) => mapAlbum(album, artistId)).filter((news) => news.id) });
   } catch (error) {
     console.error('spotify-artist-albums failed.', error);
     const functionError = error instanceof SpotifyFunctionError ? error : null;

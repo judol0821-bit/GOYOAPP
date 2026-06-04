@@ -7,8 +7,16 @@ import { getNewsByFollowedArtists } from '../api/news.js';
 import { getHiddenNews } from '../api/preferences.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import useLocalStorage from '../hooks/useLocalStorage.js';
+import useOnlineStatus from '../hooks/useOnlineStatus.js';
 import { getAnonymousUserId } from '../utils/anonymousUser.js';
+import { getSafeArtistSnapshots } from '../utils/artistSnapshots.js';
 import { getSafeCalendarEvents } from '../utils/calendarEvents.js';
+import {
+  filterCachedNewsByArtistIds,
+  HOME_NEWS_CACHE_KEY,
+  readCachedNewsItems,
+  writeCachedNewsItems,
+} from '../utils/newsCache.js';
 
 const typeLabels = {
   concert: '공연',
@@ -151,15 +159,21 @@ export default function HomePage() {
     isLoading: true,
   });
   const [followedArtistIds] = useLocalStorage('followedArtistIds', []);
+  const [followedArtistSnapshots] = useLocalStorage('followedArtistSnapshots', []);
   const [hiddenNewsIds, setHiddenNewsIds] = useLocalStorage('hiddenNewsIds', []);
   const [calendarEvents] = useLocalStorage('calendarEvents', []);
 
   const anonymousUserId = useMemo(() => getAnonymousUserId(), []);
+  const isOnline = useOnlineStatus();
   const normalizedSearchQuery = normalizeSearchText(searchQuery);
   const safeFollowedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
+  const safeArtistSnapshots = getSafeArtistSnapshots(followedArtistSnapshots);
   const safeHiddenNewsIds = Array.isArray(hiddenNewsIds) ? hiddenNewsIds : [];
   const safeCalendarEvents = getSafeCalendarEvents(calendarItems ?? calendarEvents);
   const followedArtistIdsKey = safeFollowedArtistIds.join('|');
+  const followedArtistSnapshotsKey = safeArtistSnapshots
+    .map((artist) => `${artist.id}:${artist.externalId}`)
+    .join('|');
 
   useEffect(() => {
     let isCancelled = false;
@@ -202,7 +216,31 @@ export default function HomePage() {
       return undefined;
     }
 
-    setHomeState({ error: null, isLoading: true });
+    const cachedArtists = safeArtistSnapshots.filter(
+      (artist) => safeFollowedArtistIds.includes(artist.id) || safeFollowedArtistIds.includes(artist.externalId),
+    );
+    const cachedNews = filterCachedNewsByArtistIds(
+      readCachedNewsItems(HOME_NEWS_CACHE_KEY),
+      safeFollowedArtistIds,
+    );
+
+    if (cachedArtists.length > 0) {
+      setArtistItems(cachedArtists);
+    }
+
+    if (cachedNews.length > 0) {
+      setNewsItems(cachedNews);
+    }
+
+    if (!isOnline) {
+      setHomeState({
+        error: cachedNews.length > 0 ? null : '네트워크 연결을 확인해주세요.',
+        isLoading: false,
+      });
+      return undefined;
+    }
+
+    setHomeState({ error: null, isLoading: cachedArtists.length === 0 && cachedNews.length === 0 });
 
     Promise.all([
       Promise.all(safeFollowedArtistIds.map((artistId) => getArtistById(artistId))),
@@ -210,17 +248,23 @@ export default function HomePage() {
     ])
       .then(([artists, news]) => {
         if (!isCancelled) {
-          setArtistItems(artists.filter(Boolean));
-          setNewsItems(news);
+          const nextArtists = artists.filter(Boolean);
+          const nextNews = Array.isArray(news) ? news : [];
+
+          setArtistItems(nextArtists.length > 0 ? nextArtists : cachedArtists);
+          setNewsItems(nextNews);
+          writeCachedNewsItems(HOME_NEWS_CACHE_KEY, nextNews);
           setHomeState({ error: null, isLoading: false });
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        console.warn('Home data sync failed.', error);
+
         if (!isCancelled) {
-          setArtistItems([]);
-          setNewsItems([]);
+          setArtistItems(cachedArtists);
+          setNewsItems(cachedNews);
           setHomeState({
-            error: '데이터를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.',
+            error: cachedNews.length > 0 ? null : '네트워크 연결을 확인해주세요.',
             isLoading: false,
           });
         }
@@ -229,10 +273,12 @@ export default function HomePage() {
     return () => {
       isCancelled = true;
     };
-  }, [followedArtistIdsKey]);
+  }, [followedArtistIdsKey, followedArtistSnapshotsKey, isOnline]);
 
   const followedArtists = useMemo(() => {
-    return uniqueById(artistItems).filter((artist) => safeFollowedArtistIds.includes(artist.id));
+    return uniqueById(artistItems).filter(
+      (artist) => safeFollowedArtistIds.includes(artist.id) || safeFollowedArtistIds.includes(artist.externalId),
+    );
   }, [artistItems, safeFollowedArtistIds]);
 
   const followedNews = useMemo(() => {
@@ -263,6 +309,55 @@ export default function HomePage() {
   const latestNews = useMemo(() => {
     return [...visibleNews].sort(sortByCreatedAtDesc).slice(0, 4);
   }, [visibleNews]);
+
+  const artistEmptyCopy = (() => {
+    if (normalizedSearchQuery) {
+      return {
+        title: '검색된 아티스트가 없어요.',
+        description: '다른 이름이나 장르로 검색해 보세요.',
+      };
+    }
+
+    if (safeFollowedArtistIds.length > 0 && !isOnline) {
+      return {
+        title: '팔로우 정보를 불러올 수 없어요.',
+        description: '네트워크 연결을 확인해주세요. 저장된 정보가 있으면 먼저 보여드릴게요.',
+      };
+    }
+
+    return {
+      title: '팔로우한 아티스트가 없어요.',
+      description: '좋아하는 아티스트를 선택하면 홈이 채워져요.',
+    };
+  })();
+
+  const newsEmptyCopy = (() => {
+    if (normalizedSearchQuery) {
+      return {
+        title: '검색된 소식이 없어요.',
+        description: '다른 아티스트나 키워드로 검색해 보세요.',
+      };
+    }
+
+    if (safeFollowedArtistIds.length === 0) {
+      return {
+        title: '아직 팔로우한 아티스트가 없어요.',
+        description: '온보딩에서 관심 있는 아티스트를 선택해 주세요.',
+      };
+    }
+
+    if (!isOnline || homeState.error) {
+      return {
+        title: '네트워크 연결을 확인해주세요.',
+        description: '저장된 소식이 있으면 먼저 보여드리고, 연결되면 다시 동기화할게요.',
+      };
+    }
+
+    return {
+      title: '새로운 소식이 아직 없어요.',
+      description: '팔로우한 아티스트의 소식이 도착하면 보여드릴게요.',
+    };
+  })();
 
   return (
     <main className="page page-home" aria-label="home">
@@ -307,8 +402,8 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="home-empty-card compact">
-            <strong>{normalizedSearchQuery ? '검색된 아티스트가 없어요.' : '팔로우한 아티스트가 없어요.'}</strong>
-            <p>{homeState.error || (normalizedSearchQuery ? '다른 이름이나 장르로 검색해 보세요.' : '좋아하는 아티스트를 선택하면 홈이 채워져요.')}</p>
+            <strong>{artistEmptyCopy.title}</strong>
+            <p>{homeState.error || artistEmptyCopy.description}</p>
           </div>
         )}
       </section>
@@ -341,8 +436,8 @@ export default function HomePage() {
           </motion.button>
         ) : (
           <div className="home-empty-card">
-            <strong>아직 보여줄 소식이 없어요.</strong>
-            <p>온보딩에서 관심 있는 아티스트를 팔로우해 주세요.</p>
+            <strong>{newsEmptyCopy.title}</strong>
+            <p>{newsEmptyCopy.description}</p>
           </div>
         )}
       </section>
@@ -405,8 +500,8 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="home-empty-card compact">
-            <strong>새 소식이 없어요.</strong>
-            <p>팔로우한 아티스트의 소식이 도착하면 보여드릴게요.</p>
+            <strong>{newsEmptyCopy.title}</strong>
+            <p>{newsEmptyCopy.description}</p>
           </div>
         )}
       </section>

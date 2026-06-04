@@ -8,25 +8,8 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
-      includeAssets: ['goyo-icon.svg'],
-      manifest: {
-        name: 'GOYO',
-        short_name: 'GOYO',
-        description: 'GOYO mobile PWA',
-        theme_color: '#111111',
-        background_color: '#F7F4EF',
-        display: 'standalone',
-        start_url: '/',
-        scope: '/',
-        icons: [
-          {
-            src: '/goyo-icon.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
-          },
-        ],
-      },
+      includeAssets: ['goyo-icon.svg', 'manifest.webmanifest'],
+      manifest: false,
       workbox: {
         cleanupOutdatedCaches: true,
         clientsClaim: true,

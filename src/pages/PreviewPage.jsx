@@ -5,8 +5,15 @@ import { addCalendarEvent } from '../api/calendar.js';
 import { getNewsByFollowedArtists } from '../api/news.js';
 import { getHiddenNews, hideNews } from '../api/preferences.js';
 import useLocalStorage from '../hooks/useLocalStorage.js';
+import useOnlineStatus from '../hooks/useOnlineStatus.js';
 import { getAnonymousUserId } from '../utils/anonymousUser.js';
 import { getSafeCalendarEvents, hasCalendarEvent } from '../utils/calendarEvents.js';
+import {
+  filterCachedNewsByArtistIds,
+  PREVIEW_NEWS_CACHE_KEY,
+  readCachedNewsItems,
+  writeCachedNewsItems,
+} from '../utils/newsCache.js';
 
 const newsTypeLabels = {
   concert: '공연',
@@ -41,6 +48,7 @@ export default function PreviewPage() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [newsItems, setNewsItems] = useState([]);
+  const [completedNewsIds, setCompletedNewsIds] = useState([]);
   const [newsState, setNewsState] = useState({
     error: null,
     isLoading: true,
@@ -58,8 +66,10 @@ export default function PreviewPage() {
   const [calendarEvents, setCalendarEvents] = useLocalStorage('calendarEvents', []);
 
   const anonymousUserId = useMemo(() => getAnonymousUserId(), []);
+  const isOnline = useOnlineStatus();
   const safeFollowedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
   const safeHiddenNewsIds = Array.isArray(hiddenNewsIds) ? hiddenNewsIds : [];
+  const safeCompletedNewsIds = Array.isArray(completedNewsIds) ? completedNewsIds : [];
   const safeCalendarEvents = getSafeCalendarEvents(calendarEvents);
   const followedArtistIdsKey = safeFollowedArtistIds.join('|');
 
@@ -85,24 +95,54 @@ export default function PreviewPage() {
 
     if (safeFollowedArtistIds.length === 0) {
       setNewsItems([]);
+      setCompletedNewsIds([]);
+      setCurrentIndex(0);
       setNewsState({ error: null, isLoading: false });
       return undefined;
     }
 
-    setNewsState({ error: null, isLoading: true });
+    const cachedPreviewNews = filterCachedNewsByArtistIds(
+      readCachedNewsItems(PREVIEW_NEWS_CACHE_KEY),
+      safeFollowedArtistIds,
+    );
+
+    if (cachedPreviewNews.length > 0) {
+      setNewsItems(cachedPreviewNews);
+      setCompletedNewsIds([]);
+      setCurrentIndex(0);
+    }
+
+    if (!isOnline) {
+      setNewsState({
+        error: cachedPreviewNews.length > 0 ? null : '네트워크 연결을 확인해주세요.',
+        isLoading: false,
+      });
+      return undefined;
+    }
+
+    setNewsState({ error: null, isLoading: cachedPreviewNews.length === 0 });
 
     getNewsByFollowedArtists(safeFollowedArtistIds)
       .then((items) => {
         if (!isCancelled) {
-          setNewsItems(items);
+          const nextItems = Array.isArray(items) ? items : [];
+
+          setNewsItems(nextItems);
+          writeCachedNewsItems(PREVIEW_NEWS_CACHE_KEY, nextItems);
+          setCompletedNewsIds([]);
+          setCurrentIndex(0);
           setNewsState({ error: null, isLoading: false });
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        console.warn('Preview news sync failed.', error);
+
         if (!isCancelled) {
-          setNewsItems([]);
+          setNewsItems(cachedPreviewNews);
+          setCompletedNewsIds([]);
+          setCurrentIndex(0);
           setNewsState({
-            error: '소식을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.',
+            error: cachedPreviewNews.length > 0 ? null : '네트워크 연결을 확인해주세요.',
             isLoading: false,
           });
         }
@@ -111,18 +151,19 @@ export default function PreviewPage() {
     return () => {
       isCancelled = true;
     };
-  }, [followedArtistIdsKey]);
+  }, [followedArtistIdsKey, isOnline]);
 
   const visibleNews = useMemo(() => {
     return uniqueNews(newsItems)
       .filter((news) => {
         const isFollowed = safeFollowedArtistIds.includes(news.artistId);
         const isHidden = safeHiddenNewsIds.includes(news.id);
+        const isCompleted = safeCompletedNewsIds.includes(news.id);
 
-        return isFollowed && !isHidden;
+        return isFollowed && !isHidden && !isCompleted;
       })
       .sort(sortByCreatedAtDesc);
-  }, [newsItems, safeFollowedArtistIds, safeHiddenNewsIds]);
+  }, [newsItems, safeFollowedArtistIds, safeHiddenNewsIds, safeCompletedNewsIds]);
 
   useEffect(() => {
     if (currentIndex > 0 && currentIndex >= visibleNews.length) {
@@ -133,26 +174,54 @@ export default function PreviewPage() {
   const currentNews = visibleNews[currentIndex];
   const isAddedToCalendar = currentNews ? hasCalendarEvent(safeCalendarEvents, currentNews.id) : false;
 
-  const handleAddCalendar = async () => {
-    if (!currentNews || isAddedToCalendar) {
+  const markNewsCompleted = (newsId) => {
+    if (!newsId) {
       return;
     }
 
-    const nextEvent = await addCalendarEvent(anonymousUserId, currentNews);
+    setCompletedNewsIds((currentIds) => {
+      const safeIds = Array.isArray(currentIds) ? currentIds : [];
+      return safeIds.includes(newsId) ? safeIds : [...safeIds, newsId];
+    });
+  };
+
+  const handleAddCalendar = async () => {
+    if (!currentNews) {
+      return;
+    }
+
+    const newsToAdd = currentNews;
+
+    if (hasCalendarEvent(safeCalendarEvents, newsToAdd.id)) {
+      markNewsCompleted(newsToAdd.id);
+      return;
+    }
+
+    let nextEvent = null;
+
+    try {
+      nextEvent = await addCalendarEvent(anonymousUserId, newsToAdd);
+    } catch (error) {
+      console.warn('Calendar event save failed.', error);
+      return;
+    }
 
     if (!nextEvent) {
+      console.warn('Calendar event was not saved.', newsToAdd);
       return;
     }
 
     setCalendarEvents((currentEvents) => {
       const safeEvents = getSafeCalendarEvents(currentEvents);
 
-      if (hasCalendarEvent(safeEvents, currentNews.id)) {
+      if (hasCalendarEvent(safeEvents, newsToAdd.id)) {
         return safeEvents;
       }
 
       return [...safeEvents, nextEvent];
     });
+
+    markNewsCompleted(newsToAdd.id);
   };
 
   const handleHideNews = () => {
@@ -165,12 +234,16 @@ export default function PreviewPage() {
       return safeIds.includes(currentNews.id) ? safeIds : [...safeIds, currentNews.id];
     });
 
-    hideNews(anonymousUserId, currentNews.id).then((newsIds) => {
-      setHiddenNewsIds((currentIds) => {
-        const safeIds = Array.isArray(currentIds) ? currentIds : [];
-        return [...new Set([...safeIds, ...newsIds])];
+    hideNews(anonymousUserId, currentNews.id)
+      .then((newsIds) => {
+        setHiddenNewsIds((currentIds) => {
+          const safeIds = Array.isArray(currentIds) ? currentIds : [];
+          return [...new Set([...safeIds, ...newsIds])];
+        });
+      })
+      .catch((error) => {
+        console.warn('Hidden news save failed.', error);
       });
-    });
   };
 
   const handleShowDetail = () => {
@@ -317,6 +390,34 @@ export default function PreviewPage() {
     opacity: 1,
     scale: isDragging ? 1.01 : 1,
   };
+  const didCompletePreview = !newsState.isLoading && !currentNews && safeCompletedNewsIds.length > 0;
+  const previewEmptyCopy = (() => {
+    if (safeFollowedArtistIds.length === 0) {
+      return {
+        title: '아직 팔로우한 아티스트가 없어요.',
+        description: '온보딩에서 관심 있는 아티스트를 선택해 주세요.',
+      };
+    }
+
+    if (didCompletePreview) {
+      return {
+        title: '오늘의 소식을 모두 확인했어요.',
+        description: '저장한 일정은 캘린더에서 다시 확인할 수 있어요.',
+      };
+    }
+
+    if (newsState.error || !isOnline) {
+      return {
+        title: '네트워크 연결을 확인해주세요.',
+        description: '저장된 소식이 있으면 먼저 보여드리고, 연결되면 다시 동기화할게요.',
+      };
+    }
+
+    return {
+      title: '새로운 소식이 아직 없어요.',
+      description: '팔로우한 아티스트의 새 소식이 도착하면 보여드릴게요.',
+    };
+  })();
 
   useEffect(() => {
     if (!isDragging) {
@@ -420,7 +521,6 @@ export default function PreviewPage() {
             <button
               className="preview-action-button primary"
               type="button"
-              disabled={isAddedToCalendar}
               onClick={handleAddCalendar}
             >
               {isAddedToCalendar ? '캘린더에 추가됨' : '캘린더 추가'}
@@ -438,8 +538,8 @@ export default function PreviewPage() {
         </motion.section>
       ) : (
         <section className="preview-empty" aria-label="empty preview">
-          <h2>{newsState.error ? '소식을 불러올 수 없어요.' : '확인할 소식이 없어요.'}</h2>
-          <p>{newsState.error || '팔로우한 아티스트를 추가하거나, 숨긴 소식을 초기화하면 다시 볼 수 있어요.'}</p>
+          <h2>{previewEmptyCopy.title}</h2>
+          <p>{previewEmptyCopy.description}</p>
           <button type="button" onClick={() => navigate('/home')}>
             닫기
           </button>

@@ -4,11 +4,19 @@ import { ensureArtistSaved } from '../api/artists.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import useArtistSearch from '../hooks/useArtistSearch.js';
 import useLocalStorage from '../hooks/useLocalStorage.js';
+import {
+  getSafeArtistSnapshots,
+  mergeArtistSnapshots,
+  normalizeArtistSnapshot,
+  removeArtistSnapshotsByIds,
+} from '../utils/artistSnapshots.js';
 
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const [savedArtistIdsByExternalId, setSavedArtistIdsByExternalId] = useState({});
   const [followedArtistIds, setFollowedArtistIds] = useLocalStorage('followedArtistIds', []);
+  const [followedArtistSnapshots, setFollowedArtistSnapshots] = useLocalStorage('followedArtistSnapshots', []);
   const {
     artists: filteredArtists,
     error: searchError,
@@ -17,9 +25,20 @@ export default function OnboardingPage() {
   } = useArtistSearch(searchQuery, { includeAllWhenEmpty: true });
 
   const selectedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
+  const safeArtistSnapshots = getSafeArtistSnapshots(followedArtistSnapshots);
+
+  const getArtistFollowIds = (artist) => {
+    const externalId = artist?.externalId || '';
+    const localSavedId = externalId ? savedArtistIdsByExternalId[externalId] : '';
+    const snapshotSavedId = externalId
+      ? safeArtistSnapshots.find((snapshot) => snapshot.externalId === externalId)?.id
+      : '';
+
+    return [artist?.id, externalId, localSavedId, snapshotSavedId].filter(Boolean);
+  };
 
   const toggleFollow = async (artist) => {
-    const artistIds = [artist?.id, artist?.externalId].filter(Boolean);
+    const artistIds = getArtistFollowIds(artist);
     const isAlreadyFollowed = artistIds.some((artistId) => selectedArtistIds.includes(artistId));
 
     if (isAlreadyFollowed) {
@@ -27,6 +46,7 @@ export default function OnboardingPage() {
         const safeIds = Array.isArray(currentIds) ? currentIds : [];
         return safeIds.filter((id) => !artistIds.includes(id));
       });
+      setFollowedArtistSnapshots((currentSnapshots) => removeArtistSnapshotsByIds(currentSnapshots, artistIds));
       return;
     }
 
@@ -35,6 +55,15 @@ export default function OnboardingPage() {
 
     if (!nextArtistId) {
       return;
+    }
+
+    const spotifyExternalId = artist?.source === 'spotify' ? artist.externalId || artist.id : '';
+
+    if (spotifyExternalId && savedArtist?.id) {
+      setSavedArtistIdsByExternalId((currentMap) => ({
+        ...currentMap,
+        [spotifyExternalId]: savedArtist.id,
+      }));
     }
 
     setFollowedArtistIds((currentIds) => {
@@ -46,6 +75,23 @@ export default function OnboardingPage() {
 
       return [...safeIds, nextArtistId];
     });
+
+    const snapshot = normalizeArtistSnapshot(
+      {
+        ...artist,
+        ...savedArtist,
+        externalId: artist?.externalId || savedArtist?.externalId || '',
+        imageUrl: artist?.imageUrl || savedArtist?.imageUrl || '',
+        genres:
+          Array.isArray(artist?.genres) && artist.genres.length > 0 ? artist.genres : savedArtist?.genres,
+        source: savedArtist?.source || artist?.source || 'manual',
+      },
+      { id: nextArtistId },
+    );
+
+    if (snapshot) {
+      setFollowedArtistSnapshots((currentSnapshots) => mergeArtistSnapshots(currentSnapshots, [snapshot]));
+    }
   };
 
   const canStart = selectedArtistIds.length > 0;
@@ -97,7 +143,7 @@ export default function OnboardingPage() {
         ) : (
           <div className="artist-list" aria-busy={isSearching}>
             {filteredArtists.map((artist) => {
-              const artistIds = [artist.id, artist.externalId].filter(Boolean);
+              const artistIds = getArtistFollowIds(artist);
               const isFollowed = artistIds.some((artistId) => selectedArtistIds.includes(artistId));
               const genres = Array.isArray(artist.genres) ? artist.genres : [];
 

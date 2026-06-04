@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
+import { isBrowserOffline } from '../utils/network.js';
 import { isUuid, mapHiddenNewsFromSupabase } from './mappers.js';
 
 const HIDDEN_NEWS_IDS_KEY = 'hiddenNewsIds';
@@ -25,7 +26,7 @@ const writeLocalHiddenNewsIds = (newsIds) => {
 };
 
 export async function getHiddenNews(anonymousUserId) {
-  if (isSupabaseConfigured() && anonymousUserId) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { data, error } = await client
@@ -56,7 +57,7 @@ export async function hideNews(anonymousUserId, newsId) {
     return readLocalHiddenNewsIds();
   }
 
-  if (isSupabaseConfigured() && anonymousUserId && isUuid(newsId)) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId && isUuid(newsId)) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { error } = await client
@@ -93,7 +94,7 @@ export async function removeHiddenNews(anonymousUserId, newsId) {
     return false;
   }
 
-  if (isSupabaseConfigured() && anonymousUserId && isUuid(newsId)) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId && isUuid(newsId)) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { error } = await client
@@ -117,7 +118,7 @@ export async function removeHiddenNews(anonymousUserId, newsId) {
 }
 
 export async function clearHiddenNews(anonymousUserId) {
-  if (isSupabaseConfigured() && anonymousUserId) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { error } = await client

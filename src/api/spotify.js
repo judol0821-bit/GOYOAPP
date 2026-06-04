@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../lib/supabase.js';
+import { isBrowserOffline } from '../utils/network.js';
 import { mapSpotifyAlbumToNews, mapSpotifyArtist } from './mappers.js';
 
 export const SPOTIFY_STATUS = {
@@ -11,6 +12,34 @@ const SPOTIFY_ARTIST_CACHE_KEY = 'goyoSpotifyArtistCache';
 const SPOTIFY_NEWS_CACHE_KEY = 'goyoSpotifyNewsCache';
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
+const normalizeArtistId = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const readStorageArray = (key) => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  const storageValues = [window.localStorage, window.sessionStorage].flatMap((storage) => {
+    try {
+      const value = JSON.parse(storage.getItem(key) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  });
+
+  return storageValues;
+};
+
+const writeStorageArray = (key, items) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const value = JSON.stringify(items);
+  window.localStorage.setItem(key, value);
+  window.sessionStorage.setItem(key, value);
+};
 
 const unwrapList = (payload, key) => {
   if (Array.isArray(payload)) {
@@ -69,12 +98,9 @@ const readCachedSpotifyArtists = () => {
     return [];
   }
 
-  try {
-    const value = JSON.parse(window.sessionStorage.getItem(SPOTIFY_ARTIST_CACHE_KEY) || '[]');
-    return Array.isArray(value) ? value.map(mapSpotifyArtist).filter((artist) => artist?.id) : [];
-  } catch {
-    return [];
-  }
+  return readStorageArray(SPOTIFY_ARTIST_CACHE_KEY)
+    .map(mapSpotifyArtist)
+    .filter((artist) => artist?.id);
 };
 
 const writeCachedSpotifyArtists = (artists) => {
@@ -90,7 +116,7 @@ const writeCachedSpotifyArtists = (artists) => {
     }
   });
 
-  window.sessionStorage.setItem(SPOTIFY_ARTIST_CACHE_KEY, JSON.stringify(Array.from(artistById.values()).slice(0, 80)));
+  writeStorageArray(SPOTIFY_ARTIST_CACHE_KEY, Array.from(artistById.values()).slice(0, 80));
 };
 
 export const getCachedSpotifyArtistById = (artistId) => {
@@ -112,12 +138,9 @@ const readCachedSpotifyNews = () => {
     return [];
   }
 
-  try {
-    const value = JSON.parse(window.sessionStorage.getItem(SPOTIFY_NEWS_CACHE_KEY) || '[]');
-    return Array.isArray(value) ? value.map(mapSpotifyAlbumToNews).filter((news) => news?.id) : [];
-  } catch {
-    return [];
-  }
+  return readStorageArray(SPOTIFY_NEWS_CACHE_KEY)
+    .map(mapSpotifyAlbumToNews)
+    .filter((news) => news?.id);
 };
 
 const writeCachedSpotifyNews = (newsItems) => {
@@ -133,7 +156,17 @@ const writeCachedSpotifyNews = (newsItems) => {
     }
   });
 
-  window.sessionStorage.setItem(SPOTIFY_NEWS_CACHE_KEY, JSON.stringify(Array.from(newsById.values()).slice(0, 120)));
+  writeStorageArray(SPOTIFY_NEWS_CACHE_KEY, Array.from(newsById.values()).slice(0, 160));
+};
+
+const readCachedSpotifyNewsByArtistId = (artistId) => {
+  const normalizedArtistId = normalizeArtistId(artistId);
+
+  if (!normalizedArtistId) {
+    return [];
+  }
+
+  return readCachedSpotifyNews().filter((news) => news.artistId === normalizedArtistId);
 };
 
 export const getCachedSpotifyNewsById = (newsId) => {
@@ -166,7 +199,7 @@ export async function searchSpotifyArtists(query) {
   const normalizedQuery = normalizeText(query);
   const client = getSupabaseClient();
 
-  if (!client || !normalizedQuery) {
+  if (!client || !normalizedQuery || isBrowserOffline()) {
     return [];
   }
 
@@ -192,11 +225,15 @@ export async function searchSpotifyArtists(query) {
 }
 
 export async function getSpotifyArtistAlbums(artistId) {
-  const spotifyArtistId = normalizeText(artistId);
+  const spotifyArtistId = normalizeArtistId(artistId);
   const client = getSupabaseClient();
 
   if (!client || !spotifyArtistId) {
     return [];
+  }
+
+  if (isBrowserOffline()) {
+    return readCachedSpotifyNewsByArtistId(spotifyArtistId);
   }
 
   try {
@@ -207,7 +244,16 @@ export async function getSpotifyArtistAlbums(artistId) {
 
     if (functionError) {
       warnSpotifyFallback('Spotify artist albums', functionError);
-      return [];
+      return readCachedSpotifyNewsByArtistId(spotifyArtistId);
+    }
+
+    if (/rate limited/i.test(data?.message || '')) {
+      warnSpotifyFallback('Spotify artist albums', {
+        message: data.message,
+        status: 429,
+        stage: 'albums',
+      });
+      return readCachedSpotifyNewsByArtistId(spotifyArtistId);
     }
 
     const newsItems = unwrapList(data, 'news')
@@ -219,12 +265,14 @@ export async function getSpotifyArtistAlbums(artistId) {
       )
       .filter((news) => news.id);
 
-    writeCachedSpotifyNews(newsItems);
+    if (newsItems.length > 0) {
+      writeCachedSpotifyNews(newsItems);
+    }
 
     return newsItems;
   } catch (error) {
     warnSpotifyFallback('Spotify artist albums', error);
-    return [];
+    return readCachedSpotifyNewsByArtistId(spotifyArtistId);
   }
 }
 
@@ -238,6 +286,16 @@ export async function testSpotifyConnection() {
       status: 'disabled',
       message: 'Spotify 비활성화',
       reason: 'supabase_not_configured',
+    };
+  }
+
+  if (isBrowserOffline()) {
+    return {
+      enabled: true,
+      ok: false,
+      status: 'offline',
+      message: '오프라인 모드',
+      reason: 'offline',
     };
   }
 

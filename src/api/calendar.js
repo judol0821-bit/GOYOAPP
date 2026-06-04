@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
 import { createCalendarEvent, getSafeCalendarEvents } from '../utils/calendarEvents.js';
+import { isBrowserOffline } from '../utils/network.js';
 import { isUuid, mapCalendarEventFromSupabase, toSupabaseCalendarPayload } from './mappers.js';
 
 const CALENDAR_EVENTS_KEY = 'calendarEvents';
@@ -25,7 +26,7 @@ const writeLocalCalendarEvents = (events) => {
 };
 
 export async function getCalendarEvents(anonymousUserId) {
-  if (isSupabaseConfigured() && anonymousUserId) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { data, error } = await client
@@ -53,7 +54,7 @@ export async function addCalendarEvent(anonymousUserId, newsItem) {
     return null;
   }
 
-  if (isSupabaseConfigured() && anonymousUserId && isUuid(newsItem.id)) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId && isUuid(newsItem.id)) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { data, error } = await client
@@ -101,7 +102,7 @@ export async function removeCalendarEvent(anonymousUserId, eventId) {
     return false;
   }
 
-  if (isSupabaseConfigured() && anonymousUserId && isUuid(eventId)) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId && isUuid(eventId)) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { error } = await client
@@ -127,7 +128,7 @@ export async function removeCalendarEvent(anonymousUserId, eventId) {
 }
 
 export async function clearCalendarEvents(anonymousUserId) {
-  if (isSupabaseConfigured() && anonymousUserId) {
+  if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId) {
     try {
       const client = getSupabaseClient(anonymousUserId);
       const { error } = await client

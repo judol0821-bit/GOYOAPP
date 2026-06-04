@@ -19,6 +19,7 @@ export default function DetailPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const [news, setNews] = useState(null);
+  const [hasImageError, setHasImageError] = useState(false);
   const [detailState, setDetailState] = useState({
     error: null,
     isLoading: true,
@@ -37,6 +38,7 @@ export default function DetailPage() {
     }
 
     setDetailState({ error: null, isLoading: true });
+    setHasImageError(false);
 
     getNewsById(id)
       .then((item) => {
@@ -71,7 +73,14 @@ export default function DetailPage() {
       return;
     }
 
-    const nextEvent = await addCalendarEvent(anonymousUserId, news);
+    let nextEvent = null;
+
+    try {
+      nextEvent = await addCalendarEvent(anonymousUserId, news);
+    } catch (error) {
+      console.warn('Calendar event save failed.', error);
+      return;
+    }
 
     if (!nextEvent) {
       return;
@@ -98,7 +107,9 @@ export default function DetailPage() {
       return safeIds.includes(news.id) ? safeIds : [...safeIds, news.id];
     });
 
-    hideNews(anonymousUserId, news.id);
+    hideNews(anonymousUserId, news.id).catch((error) => {
+      console.warn('Hidden news save failed.', error);
+    });
     navigate('/home');
   };
 
@@ -145,7 +156,16 @@ export default function DetailPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
       >
-        <img className="detail-image" src={news.imageUrl} alt={`${news.title} 이미지`} />
+        {news.imageUrl && !hasImageError ? (
+          <img
+            className="detail-image"
+            src={news.imageUrl}
+            alt={`${news.title} 이미지`}
+            onError={() => setHasImageError(true)}
+          />
+        ) : (
+          <div className="detail-image detail-image-placeholder" role="img" aria-label={`${news.title} 이미지 placeholder`} />
+        )}
 
         <div className="detail-body">
           <div className="detail-kicker-row">

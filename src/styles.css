@@ -4268,3 +4268,30 @@ select {
 .my-supabase-status.is-error {
   color: var(--wire-tertiary);
 }
+
+.page-onboarding {
+  min-height: calc(100dvh - 40px);
+  padding: 40px 30px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+
+.page-onboarding .onboarding-action {
+  position: sticky;
+  right: auto;
+  bottom: 0;
+  left: auto;
+  width: 100%;
+  max-width: 100%;
+  margin: auto 0 0;
+  padding: 12px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(rgba(255, 255, 255, 0), var(--wire-app-bg) 34%);
+  transform: none;
+}
+
+.page-onboarding .start-button {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  align-items: center;
+  justify-content: center;
+}
