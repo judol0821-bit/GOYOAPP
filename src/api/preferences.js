@@ -37,7 +37,12 @@ export async function getHiddenNews(anonymousUserId) {
         throw error;
       }
 
-      return [...new Set((data || []).map(mapHiddenNewsFromSupabase).map((item) => item.newsId).filter(Boolean))];
+      return [
+        ...new Set([
+          ...(data || []).map(mapHiddenNewsFromSupabase).map((item) => item.newsId).filter(Boolean),
+          ...readLocalHiddenNewsIds(),
+        ]),
+      ];
     } catch (error) {
       console.error('Failed to load Supabase hidden news.', error);
     }
@@ -81,4 +86,53 @@ export async function hideNews(anonymousUserId, newsId) {
   writeLocalHiddenNewsIds(nextHiddenNewsIds);
 
   return nextHiddenNewsIds;
+}
+
+export async function removeHiddenNews(anonymousUserId, newsId) {
+  if (!newsId) {
+    return false;
+  }
+
+  if (isSupabaseConfigured() && anonymousUserId && isUuid(newsId)) {
+    try {
+      const client = getSupabaseClient(anonymousUserId);
+      const { error } = await client
+        .from('hidden_news')
+        .delete()
+        .eq('anonymous_user_id', anonymousUserId)
+        .eq('news_id', newsId);
+
+      if (error) {
+        throw error;
+      }
+    } catch (error) {
+      console.error('Failed to remove Supabase hidden news.', error);
+    }
+  }
+
+  const nextHiddenNewsIds = readLocalHiddenNewsIds().filter((currentNewsId) => currentNewsId !== newsId);
+  writeLocalHiddenNewsIds(nextHiddenNewsIds);
+
+  return true;
+}
+
+export async function clearHiddenNews(anonymousUserId) {
+  if (isSupabaseConfigured() && anonymousUserId) {
+    try {
+      const client = getSupabaseClient(anonymousUserId);
+      const { error } = await client
+        .from('hidden_news')
+        .delete()
+        .eq('anonymous_user_id', anonymousUserId);
+
+      if (error) {
+        throw error;
+      }
+    } catch (error) {
+      console.error('Failed to clear Supabase hidden news.', error);
+    }
+  }
+
+  writeLocalHiddenNewsIds([]);
+  return [];
 }

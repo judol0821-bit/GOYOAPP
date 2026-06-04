@@ -39,7 +39,7 @@ export async function getCalendarEvents(anonymousUserId) {
         throw error;
       }
 
-      return getSafeCalendarEvents((data || []).map(mapCalendarEventFromSupabase));
+      return getSafeCalendarEvents([...((data || []).map(mapCalendarEventFromSupabase)), ...readLocalCalendarEvents()]);
     } catch (error) {
       console.error('Failed to load Supabase calendar events.', error);
     }
@@ -124,4 +124,25 @@ export async function removeCalendarEvent(anonymousUserId, eventId) {
   writeLocalCalendarEvents(nextEvents);
 
   return true;
+}
+
+export async function clearCalendarEvents(anonymousUserId) {
+  if (isSupabaseConfigured() && anonymousUserId) {
+    try {
+      const client = getSupabaseClient(anonymousUserId);
+      const { error } = await client
+        .from('calendar_events')
+        .delete()
+        .eq('anonymous_user_id', anonymousUserId);
+
+      if (error) {
+        throw error;
+      }
+    } catch (error) {
+      console.error('Failed to clear Supabase calendar events.', error);
+    }
+  }
+
+  writeLocalCalendarEvents([]);
+  return [];
 }

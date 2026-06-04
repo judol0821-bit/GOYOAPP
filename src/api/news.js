@@ -2,16 +2,17 @@ import { mockNews } from '../data/mockNews.js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase.js';
 import { apiFetch, hasApiBaseUrl } from './client.js';
 import { dedupeNewsItems, isUuid, mapNewsFromSupabase } from './mappers.js';
-import { getSpotifyArtistAlbums } from './spotify.js';
+import { getCachedSpotifyNewsById, getSpotifyArtistAlbums } from './spotify.js';
 
-const SPOTIFY_NEWS_CACHE_KEY = 'goyoSpotifyNewsCache';
 const MOCK_ARTIST_IDS = new Set(mockNews.map((news) => news.artistId).filter(Boolean));
 
 const getUniqueNews = (newsItems) => {
   return dedupeNewsItems(newsItems);
 };
 
-const sortByCreatedAtDesc = (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '');
+const getNewsSortValue = (news) => news.createdAt || `${news.date || ''}T${news.startTime || '00:00'}:00`;
+
+const sortByCreatedAtDesc = (a, b) => getNewsSortValue(b).localeCompare(getNewsSortValue(a));
 
 const unwrapNewsList = (payload) => {
   if (Array.isArray(payload)) {
@@ -30,28 +31,6 @@ const unwrapNewsList = (payload) => {
 };
 
 const unwrapNews = (payload) => payload?.news || payload?.item || payload;
-
-const readCachedSpotifyNews = () => {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const value = JSON.parse(window.sessionStorage.getItem(SPOTIFY_NEWS_CACHE_KEY) || '[]');
-    return getUniqueNews(value);
-  } catch {
-    return [];
-  }
-};
-
-const writeCachedSpotifyNews = (newsItems) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  const cachedNews = getUniqueNews([...readCachedSpotifyNews(), ...newsItems]).slice(0, 80);
-  window.sessionStorage.setItem(SPOTIFY_NEWS_CACHE_KEY, JSON.stringify(cachedNews));
-};
 
 const filterByArtistIds = (newsItems, artistIds) => {
   const safeArtistIds = Array.isArray(artistIds) ? artistIds.filter(Boolean) : [];
@@ -150,13 +129,7 @@ const loadSpotifyAlbumNews = async (spotifyArtistIdByFrontendId) => {
     }),
   );
 
-  const spotifyNews = getUniqueNews(newsGroups.flat()).sort(sortByCreatedAtDesc);
-
-  if (spotifyNews.length > 0) {
-    writeCachedSpotifyNews(spotifyNews);
-  }
-
-  return spotifyNews;
+  return getUniqueNews(newsGroups.flat()).sort(sortByCreatedAtDesc);
 };
 
 export async function getNewsByFollowedArtists(artistIds) {
@@ -195,7 +168,7 @@ export async function getNewsByFollowedArtists(artistIds) {
       const spotifyNews = await loadSpotifyAlbumNews(spotifyArtistIdByFrontendId);
       const mergedNews = getUniqueNews([...supabaseNews, ...spotifyNews]).sort(sortByCreatedAtDesc);
 
-      return mergedNews.length > 0 ? filterByArtistIds(mergedNews, safeArtistIds) : filterByArtistIds(mockNews, safeArtistIds);
+      return filterByArtistIds(mergedNews, safeArtistIds);
     } catch (error) {
       console.error('Failed to load Supabase news.', error);
       return filterByArtistIds(mockNews, safeArtistIds);
@@ -221,7 +194,7 @@ export async function getNewsById(id) {
     return null;
   }
 
-  const cachedSpotifyNews = readCachedSpotifyNews().find((news) => news.id === id);
+  const cachedSpotifyNews = getCachedSpotifyNewsById(id);
 
   if (cachedSpotifyNews) {
     return cachedSpotifyNews;

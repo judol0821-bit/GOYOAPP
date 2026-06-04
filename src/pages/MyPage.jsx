@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getArtistById } from '../api/artists.js';
-import { getCalendarEvents } from '../api/calendar.js';
-import { getHiddenNews } from '../api/preferences.js';
+import { clearCalendarEvents as clearRemoteCalendarEvents, getCalendarEvents } from '../api/calendar.js';
+import { clearHiddenNews as clearRemoteHiddenNews, getHiddenNews } from '../api/preferences.js';
+import { testSpotifyConnection } from '../api/spotify.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import useLocalStorage from '../hooks/useLocalStorage.js';
 import { testSupabaseConnection } from '../lib/supabase.js';
@@ -17,6 +18,10 @@ export default function MyPage() {
   const [isLoadingArtists, setIsLoadingArtists] = useState(true);
   const [supabaseStatus, setSupabaseStatus] = useState({
     message: 'Supabase 상태 확인 중',
+    status: 'checking',
+  });
+  const [spotifyStatus, setSpotifyStatus] = useState({
+    message: 'Spotify 상태 확인 중',
     status: 'checking',
   });
   const [followedArtistIds, , clearFollowedArtistIds] = useLocalStorage('followedArtistIds', []);
@@ -35,6 +40,12 @@ export default function MyPage() {
     testSupabaseConnection().then((status) => {
       if (!isCancelled) {
         setSupabaseStatus(status);
+      }
+    });
+
+    testSpotifyConnection().then((status) => {
+      if (!isCancelled) {
+        setSpotifyStatus(status);
       }
     });
 
@@ -106,12 +117,14 @@ export default function MyPage() {
     });
   }, [artistItems, safeFollowedArtistIds]);
 
-  const handleReset = () => {
+  const handleReset = async () => {
     const confirmed = window.confirm('팔로우, 관심없음, 캘린더 데이터를 모두 초기화할까요?');
 
     if (!confirmed) {
       return;
     }
+
+    await Promise.all([clearRemoteCalendarEvents(anonymousUserId), clearRemoteHiddenNews(anonymousUserId)]);
 
     clearFollowedArtistIds();
     clearHiddenNewsIds();
@@ -184,7 +197,9 @@ export default function MyPage() {
         </button>
       </section>
 
-      <p className={`my-supabase-status is-${supabaseStatus.status}`}>{supabaseStatus.message}</p>
+      <p className={`my-supabase-status is-${supabaseStatus.status}`}>
+        {supabaseStatus.message} / {spotifyStatus.message}
+      </p>
     </main>
   );
 }

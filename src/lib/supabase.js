@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
+export const ANONYMOUS_ID_HEADER = 'x-goyo-anonymous-id';
+
 export const isSupabaseConfigured = () => Boolean(supabaseUrl && supabaseAnonKey);
 
 export const supabase = isSupabaseConfigured()
@@ -21,7 +23,7 @@ export const getSupabaseClient = (anonymousUserId) => {
   return createClient(supabaseUrl, supabaseAnonKey, {
     global: {
       headers: {
-        'x-goyo-anonymous-id': anonymousUserId,
+        [ANONYMOUS_ID_HEADER]: anonymousUserId,
       },
     },
   });
@@ -38,13 +40,22 @@ export const testSupabaseConnection = async () => {
   }
 
   try {
-    const { error } = await supabase
+    const { count: artistCount, error: artistError } = await supabase
       .from('artists')
-      .select('id')
+      .select('id', { count: 'exact', head: true })
       .limit(1);
 
-    if (error) {
-      throw error;
+    if (artistError) {
+      throw artistError;
+    }
+
+    const { count: newsCount, error: newsError } = await supabase
+      .from('news_items')
+      .select('id', { count: 'exact', head: true })
+      .limit(1);
+
+    if (newsError) {
+      throw newsError;
     }
 
     return {
@@ -52,6 +63,10 @@ export const testSupabaseConnection = async () => {
       ok: true,
       status: 'connected',
       message: 'Supabase 연결됨',
+      counts: {
+        artists: artistCount ?? 0,
+        newsItems: newsCount ?? 0,
+      },
     };
   } catch (error) {
     console.error('Supabase connection test failed.', error);

@@ -1,0 +1,7 @@
+project_id = "skspszkqmkeekhnerfss"
+
+[functions.spotify-search-artists]
+verify_jwt = false
+
+[functions.spotify-artist-albums]
+verify_jwt = false

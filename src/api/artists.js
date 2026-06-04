@@ -42,25 +42,19 @@ const searchMockArtists = (query, { includeAllWhenEmpty = false } = {}) => {
   });
 };
 
-const filterArtistsByQuery = (artists, query) => {
+const fetchSupabaseArtists = async (query) => {
   const normalizedQuery = normalizeText(query);
-
-  if (!normalizedQuery) {
-    return artists;
-  }
-
-  return artists.filter((artist) => {
-    const genres = Array.isArray(artist.genres) ? artist.genres : [];
-    const searchableText = `${artist.name || ''} ${genres.join(' ')}`.toLowerCase();
-    return searchableText.includes(normalizedQuery);
-  });
-};
-
-const fetchSupabaseArtists = async () => {
-  const { data, error } = await supabase
+  let request = supabase
     .from('artists')
     .select('id, external_id, name, image_url, genres, source')
-    .order('name', { ascending: true });
+    .order('name', { ascending: true })
+    .limit(20);
+
+  if (normalizedQuery) {
+    request = request.ilike('name', `%${normalizedQuery}%`);
+  }
+
+  const { data, error } = await request;
 
   if (error) {
     throw error;
@@ -78,16 +72,14 @@ export async function searchArtists(query, options = {}) {
 
   if (isSupabaseConfigured()) {
     try {
-      const artists = await fetchSupabaseArtists();
+      const artists = await fetchSupabaseArtists(normalizedQuery);
 
       if (!normalizedQuery) {
-        return options.includeAllWhenEmpty ? artists.length > 0 ? artists : searchMockArtists(query, options) : [];
+        return options.includeAllWhenEmpty ? artists : [];
       }
 
-      const [spotifyArtists] = await Promise.all([searchSpotifyArtists(normalizedQuery)]);
-      const mergedArtists = getUniqueArtists([...filterArtistsByQuery(artists, normalizedQuery), ...spotifyArtists]);
-
-      return mergedArtists.length > 0 ? mergedArtists : searchMockArtists(query, options);
+      const spotifyArtists = await searchSpotifyArtists(normalizedQuery);
+      return getUniqueArtists([...artists, ...spotifyArtists]);
     } catch (error) {
       console.error('Failed to search Supabase artists.', error);
       const fallbackArtists = searchMockArtists(query, options);

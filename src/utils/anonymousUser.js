@@ -13,9 +13,10 @@ export const getAnonymousUserId = () => {
     return createId();
   }
 
-  const existingId = window.localStorage.getItem(ANONYMOUS_USER_ID_KEY);
+  const existingId = window.localStorage.getItem(ANONYMOUS_USER_ID_KEY)?.trim();
 
   if (existingId) {
+    window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, existingId);
     return existingId;
   }
 

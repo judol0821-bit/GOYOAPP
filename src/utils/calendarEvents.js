@@ -1,4 +1,4 @@
-const requiredStringFields = ['id', 'newsId', 'title', 'date', 'time', 'location', 'artistName', 'type'];
+const requiredStringFields = ['id', 'newsId', 'title', 'date', 'location', 'artistName', 'type'];
 
 export const createCalendarEvent = (news) => ({
   id: `calendar-${news.id}`,
@@ -16,7 +16,10 @@ export const isCalendarEvent = (event) => {
     return false;
   }
 
-  return requiredStringFields.every((field) => typeof event[field] === 'string' && event[field].trim());
+  return (
+    requiredStringFields.every((field) => typeof event[field] === 'string' && event[field].trim()) &&
+    typeof event.time === 'string'
+  );
 };
 
 export const getSafeCalendarEvents = (events) => {

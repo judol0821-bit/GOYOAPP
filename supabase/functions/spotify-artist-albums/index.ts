@@ -15,6 +15,37 @@ const jsonResponse = (body: unknown, status = 200) =>
     },
   });
 
+class SpotifyFunctionError extends Error {
+  stage: string;
+  status?: number;
+
+  constructor(message: string, stage: string, status?: number) {
+    super(message);
+    this.name = 'SpotifyFunctionError';
+    this.stage = stage;
+    this.status = status;
+  }
+}
+
+const getErrorMessage = async (response: Response) => {
+  try {
+    const text = await response.text();
+
+    if (!text) {
+      return '';
+    }
+
+    try {
+      const payload = JSON.parse(text);
+      return payload?.error_description || payload?.error?.message || payload?.error || text;
+    } catch {
+      return text;
+    }
+  } catch {
+    return '';
+  }
+};
+
 const readArtistId = async (request: Request) => {
   const url = new URL(request.url);
   const artistIdFromUrl = url.searchParams.get('artistId');
@@ -56,7 +87,7 @@ const getSpotifyToken = async () => {
   const clientSecret = Deno.env.get('SPOTIFY_CLIENT_SECRET');
 
   if (!clientId || !clientSecret) {
-    throw new Error('Spotify secrets are not configured.');
+    throw new SpotifyFunctionError('Spotify secrets are not configured.', 'secrets');
   }
 
   const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
@@ -69,14 +100,15 @@ const getSpotifyToken = async () => {
   });
 
   if (!tokenResponse.ok) {
-    throw new Error(`Spotify token request failed: ${tokenResponse.status}`);
+    const spotifyMessage = (await getErrorMessage(tokenResponse)) || 'Spotify token request failed.';
+    throw new SpotifyFunctionError(spotifyMessage, 'token', tokenResponse.status);
   }
 
   const tokenPayload = await tokenResponse.json();
   const accessToken = tokenPayload?.access_token;
 
   if (!accessToken) {
-    throw new Error('Spotify token response did not include access_token.');
+    throw new SpotifyFunctionError('Spotify token response did not include access_token.', 'token');
   }
 
   return accessToken as string;
@@ -122,7 +154,6 @@ serve(async (request) => {
     const albumsUrl = new URL(`https://api.spotify.com/v1/artists/${encodeURIComponent(artistId)}/albums`);
     albumsUrl.searchParams.set('include_groups', 'album,single');
     albumsUrl.searchParams.set('market', 'KR');
-    albumsUrl.searchParams.set('limit', '20');
 
     const spotifyResponse = await fetch(albumsUrl, {
       headers: {
@@ -135,7 +166,8 @@ serve(async (request) => {
     }
 
     if (!spotifyResponse.ok) {
-      throw new Error(`Spotify artist albums request failed: ${spotifyResponse.status}`);
+      const spotifyMessage = (await getErrorMessage(spotifyResponse)) || 'Spotify artist albums request failed.';
+      throw new SpotifyFunctionError(spotifyMessage, 'albums', spotifyResponse.status);
     }
 
     const payload = await spotifyResponse.json();
@@ -144,11 +176,17 @@ serve(async (request) => {
     return jsonResponse({ news: items.map((album) => mapAlbum(album, artistId)).filter((news) => news.id) });
   } catch (error) {
     console.error('spotify-artist-albums failed.', error);
+    const functionError = error instanceof SpotifyFunctionError ? error : null;
 
     return jsonResponse(
       {
         news: [],
         message: 'Spotify album fallback should be used.',
+        error: {
+          stage: functionError?.stage || 'unknown',
+          status: functionError?.status || null,
+          message: error instanceof Error ? error.message : 'Unknown Spotify function error.',
+        },
       },
       200,
     );

@@ -62,6 +62,9 @@ export default function DetailPage() {
 
   const safeCalendarEvents = getSafeCalendarEvents(calendarEvents);
   const isAddedToCalendar = news ? hasCalendarEvent(safeCalendarEvents, news.id) : false;
+  const sourceLinkText = news?.location === 'Spotify' || news?.sourceUrl?.includes('spotify.com')
+    ? 'Spotify에서 보기'
+    : '원문 보기';
 
   const handleAddCalendar = async () => {
     if (!news || isAddedToCalendar) {
@@ -169,9 +172,13 @@ export default function DetailPage() {
             <div>
               <dt>출처</dt>
               <dd>
-                <a href={news.sourceUrl} target="_blank" rel="noreferrer">
-                  원문 보기
-                </a>
+                {news.sourceUrl ? (
+                  <a href={news.sourceUrl} target="_blank" rel="noreferrer">
+                    {sourceLinkText}
+                  </a>
+                ) : (
+                  <span>출처 없음</span>
+                )}
               </dd>
             </div>
           </dl>
