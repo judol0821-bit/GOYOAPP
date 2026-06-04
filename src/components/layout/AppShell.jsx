@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation, useOutlet } from 'react-router-dom';
+import AppSplash from '../AppSplash.jsx';
 import BottomNav from './BottomNav.jsx';
 
 const bottomNavPaths = ['/home', '/calendar', '/my'];
@@ -28,6 +29,7 @@ export default function AppShell() {
         </motion.div>
       </AnimatePresence>
       {showBottomNav && <BottomNav />}
+      <AppSplash />
     </div>
   );
 }

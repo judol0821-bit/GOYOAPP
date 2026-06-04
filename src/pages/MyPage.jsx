@@ -5,6 +5,7 @@ import { clearCalendarEvents as clearRemoteCalendarEvents, getCalendarEvents } f
 import { clearHiddenNews as clearRemoteHiddenNews, getHiddenNews } from '../api/preferences.js';
 import { testSpotifyConnection } from '../api/spotify.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
+import { GOYO_VERSION } from '../config/brand.js';
 import useLocalStorage from '../hooks/useLocalStorage.js';
 import useOnlineStatus from '../hooks/useOnlineStatus.js';
 import { testSupabaseConnection } from '../lib/supabase.js';
@@ -26,6 +27,7 @@ export default function MyPage() {
     message: 'Spotify 상태 확인 중',
     status: 'checking',
   });
+  const [isStandalone, setIsStandalone] = useState(false);
   const [followedArtistIds, , clearFollowedArtistIds] = useLocalStorage('followedArtistIds', []);
   const [followedArtistSnapshots, , clearFollowedArtistSnapshots] = useLocalStorage('followedArtistSnapshots', []);
   const [hiddenNewsIds, , clearHiddenNewsIds] = useLocalStorage('hiddenNewsIds', []);
@@ -43,6 +45,33 @@ export default function MyPage() {
   const followedArtistSnapshotsKey = safeArtistSnapshots
     .map((artist) => `${artist.id}:${artist.externalId}`)
     .join('|');
+
+  useEffect(() => {
+    if (!window.matchMedia) {
+      setIsStandalone(Boolean(window.navigator.standalone));
+      return undefined;
+    }
+
+    const mediaQuery = window.matchMedia('(display-mode: standalone)');
+    const updateStandaloneMode = () => {
+      setIsStandalone(Boolean(mediaQuery.matches || window.navigator.standalone));
+    };
+
+    updateStandaloneMode();
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', updateStandaloneMode);
+    } else {
+      mediaQuery.addListener?.(updateStandaloneMode);
+    }
+
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', updateStandaloneMode);
+      } else {
+        mediaQuery.removeListener?.(updateStandaloneMode);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -237,6 +266,12 @@ export default function MyPage() {
           전체 데이터 초기화
         </button>
       </section>
+
+      {!isStandalone && (
+        <p className="my-install-hint">홈 화면에 추가해 더 편하게 사용하세요.</p>
+      )}
+
+      <p className="my-version-label">GOYO v{GOYO_VERSION}</p>
 
       <p className={`my-supabase-status is-${isOnline ? supabaseStatus.status : 'offline'}`}>
         {isOnline ? `${supabaseStatus.message} / ${spotifyStatus.message}` : '오프라인 모드'}

@@ -7,9 +7,21 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
-      includeAssets: ['goyo-icon.svg', 'manifest.webmanifest'],
+      injectRegister: false,
+      includeAssets: [
+        'goyo-icon.svg',
+        'manifest.webmanifest',
+        'branding/app-icon/icon-192.png',
+        'branding/app-icon/icon-512.png',
+        'branding/app-icon/maskable-icon-512.png',
+        'branding/logo/goyo-header-logo.svg',
+        'branding/logo/goyo-wordmark.svg',
+        'branding/splash/splash-logo.svg',
+      ],
       manifest: false,
+      devOptions: {
+        enabled: false,
+      },
       workbox: {
         cleanupOutdatedCaches: true,
         clientsClaim: true,

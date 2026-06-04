@@ -4261,6 +4261,22 @@ select {
   text-align: center;
 }
 
+.my-install-hint {
+  margin: -4px 0 0;
+  color: var(--wire-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.my-version-label {
+  margin: -6px 0 0;
+  color: var(--wire-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .my-supabase-status.is-connected {
   color: var(--wire-secondary);
 }
@@ -4294,4 +4310,612 @@ select {
   margin: 0 auto;
   align-items: center;
   justify-content: center;
+}
+
+.app-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  animation: goyoSplashFade 650ms ease both;
+}
+
+.app-splash img {
+  width: 140px;
+  max-width: 44vw;
+  height: auto;
+}
+
+@keyframes goyoSplashFade {
+  0% {
+    opacity: 0;
+  }
+
+  18%,
+  82% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+/* GOYO MVP UI polish layer */
+:root {
+  --wire-body-bg: #f5f5f7;
+  --wire-app-bg: #ffffff;
+  --wire-input: #f2f2f7;
+  --wire-border: #e5e5ea;
+  --wire-primary: #007aff;
+  --wire-text: #1d1d1f;
+  --wire-secondary: #636366;
+  --wire-tertiary: #8e8e93;
+  --wire-font: Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+  --wire-card-shadow: 0 2px 10px rgba(0, 0, 0, 0.035);
+}
+
+html,
+body {
+  overflow-x: hidden;
+  background: var(--wire-body-bg);
+  font-family: var(--wire-font);
+}
+
+body {
+  display: flex;
+  min-width: 320px;
+  min-height: 100dvh;
+  justify-content: center;
+  color: var(--wire-text);
+}
+
+#root {
+  width: 100%;
+  max-width: 430px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  background: var(--wire-body-bg);
+}
+
+.app-shell.ds-app-shell {
+  width: min(100%, 375px);
+  max-width: 430px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  border-radius: 40px;
+  background: var(--wire-app-bg);
+  overflow: hidden;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.08);
+}
+
+.mock-status-bar {
+  height: calc(44px + env(safe-area-inset-top, 0px));
+  min-height: calc(44px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 30px 0;
+  background: var(--wire-app-bg);
+}
+
+.app-page-transition {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.page {
+  width: 100%;
+  min-width: 0;
+  padding: 20px;
+  color: var(--wire-text);
+  background: var(--wire-app-bg);
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.has-bottom-tabs .page {
+  padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+}
+
+.ds-bottom-nav {
+  height: calc(84px + env(safe-area-inset-bottom, 0px));
+  min-height: calc(84px + env(safe-area-inset-bottom, 0px));
+  flex-basis: calc(84px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--wire-input);
+  padding: 6px 10px calc(16px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.ds-bottom-nav__item {
+  min-width: 0;
+  min-height: 58px;
+  gap: 4px;
+  color: var(--wire-tertiary);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.ds-bottom-nav__item.active {
+  color: var(--wire-primary);
+}
+
+.home-header,
+.calendar-header,
+.my-header,
+.preview-header {
+  margin: 0 0 20px;
+}
+
+.home-header h1,
+.calendar-header h1,
+.my-header h1,
+.preview-header h1 {
+  margin: 0;
+  color: var(--wire-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.22;
+  letter-spacing: 0;
+}
+
+.home-header p,
+.calendar-header p,
+.my-header p,
+.preview-header p,
+.onboarding-hero p {
+  color: var(--wire-secondary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.home-section,
+.my-section,
+.calendar-event-section,
+.artist-section {
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.home-section-header h2,
+.my-section-header h2,
+.artist-section-header h2,
+.calendar-event-heading h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.home-section-header span,
+.my-section-header span,
+.artist-section-header span,
+.calendar-event-heading span,
+.timeline-date,
+.artist-search span {
+  color: var(--wire-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.home-searchbar,
+.artist-search input {
+  height: 44px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--wire-input);
+  box-shadow: none;
+}
+
+.artist-search input {
+  height: 50px;
+  padding: 0 15px;
+}
+
+.home-empty-card,
+.my-empty-card,
+.artist-empty-card,
+.calendar-empty-day,
+.preview-empty,
+.calendar-panel,
+.home-feature-card,
+.home-event-item,
+.home-news-item,
+.calendar-selected-event,
+.my-action-panel,
+.my-stat-grid article,
+.detail-info-list,
+.artist-item,
+.my-artist-item {
+  border: 1px solid var(--wire-border);
+  border-radius: 16px;
+  background: var(--wire-app-bg);
+  box-shadow: none;
+}
+
+.home-feature-card,
+.home-event-item,
+.home-news-item,
+.calendar-selected-event,
+.my-stat-grid article,
+.artist-item,
+.my-artist-item {
+  padding: 16px;
+}
+
+.home-empty-card,
+.my-empty-card,
+.artist-empty-card,
+.calendar-empty-day,
+.preview-empty {
+  padding: 16px;
+}
+
+.home-feature-card strong,
+.home-news-item strong,
+.home-event-item strong,
+.calendar-selected-event strong,
+.artist-info h3,
+.my-artist-item strong {
+  color: var(--wire-text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.home-feature-card p,
+.home-news-item p,
+.home-event-item p,
+.calendar-selected-event p,
+.artist-info p,
+.my-artist-item p,
+.preview-empty p,
+.home-empty-card p,
+.my-empty-card p,
+.artist-empty-card p,
+.calendar-empty-day p,
+.detail-description {
+  color: var(--wire-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.page-onboarding {
+  gap: 20px;
+  min-height: 0;
+  padding: 40px 30px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+
+.onboarding-hero {
+  gap: 12px;
+  text-align: center;
+}
+
+.onboarding-hero .app-kicker {
+  margin: 0 0 28px;
+  color: var(--wire-text);
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.onboarding-hero h1 {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.artist-list {
+  gap: 10px;
+}
+
+.artist-item,
+.my-artist-item {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  min-height: 74px;
+  gap: 12px;
+  padding: 12px;
+}
+
+.artist-item img,
+.my-artist-item img,
+.artist-item .artist-avatar,
+.my-artist-item .artist-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+}
+
+.follow-button {
+  min-width: 64px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+.page-onboarding .onboarding-action {
+  bottom: 0;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(rgba(255, 255, 255, 0), #ffffff 36%);
+}
+
+.start-button,
+.my-primary-button,
+.my-danger-button {
+  height: 56px;
+  border-radius: 16px;
+}
+
+.page-preview {
+  gap: 0;
+}
+
+.news-preview-card {
+  gap: 0;
+  margin: clamp(24px, 7vh, 68px) 0 0;
+  border: 1px solid var(--wire-border);
+  border-radius: 24px;
+  padding: 20px;
+  background: var(--wire-app-bg);
+  box-shadow: var(--wire-card-shadow);
+}
+
+.news-preview-card.is-dragging {
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
+}
+
+.preview-image-placeholder {
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  height: auto;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: var(--wire-border);
+}
+
+.news-preview-main h2 {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.preview-swipe-hints {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  color: var(--wire-tertiary);
+  font-size: 12px;
+}
+
+.preview-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.preview-action-button,
+.detail-action-button {
+  height: 44px;
+  border-radius: 16px;
+}
+
+.page-home {
+  gap: 0;
+}
+
+.home-searchbar {
+  margin-bottom: 24px;
+}
+
+.home-artist-list {
+  gap: 16px;
+  margin: 0 -20px;
+  padding: 0 20px 10px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+
+.home-artist-list::-webkit-scrollbar {
+  display: none;
+}
+
+.home-artist-item {
+  width: 76px;
+  min-width: 76px;
+  scroll-snap-align: start;
+}
+
+.home-artist-item .artist-avatar,
+.home-artist-item img {
+  width: 64px;
+  height: 64px;
+}
+
+.home-artist-item strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.home-artist-item p {
+  font-size: 11px;
+}
+
+.home-news-list,
+.home-event-list,
+.calendar-selected-list,
+.my-artist-list {
+  gap: 10px;
+}
+
+.timeline-item {
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 12px;
+  padding-left: 14px;
+}
+
+.timeline-card {
+  min-width: 0;
+}
+
+.page-calendar {
+  gap: 20px;
+}
+
+.calendar-panel {
+  gap: 16px;
+  padding: 16px;
+}
+
+.calendar-month-header h2 {
+  font-size: 18px;
+}
+
+.calendar-month-header button {
+  height: 32px;
+  border-radius: 10px;
+}
+
+.calendar-grid {
+  gap: 4px;
+}
+
+.calendar-day {
+  height: 38px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.calendar-selected-event {
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.page-detail {
+  padding-top: 20px;
+}
+
+.detail-image {
+  width: calc(100% + 40px);
+  height: 250px;
+  margin: -20px -20px 20px;
+  object-fit: cover;
+  background: var(--wire-border);
+}
+
+.detail-card {
+  min-width: 0;
+}
+
+.detail-body {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-body h1 {
+  margin: 0;
+  color: var(--wire-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.detail-info-list {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.detail-info-list div {
+  padding: 14px 16px;
+}
+
+.detail-actions {
+  position: sticky;
+  bottom: 0;
+  gap: 10px;
+  padding: 12px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(rgba(255, 255, 255, 0), #ffffff 30%);
+}
+
+.detail-action-button.primary {
+  height: 56px;
+}
+
+.page-my {
+  gap: 20px;
+}
+
+.my-stat-grid {
+  gap: 10px;
+}
+
+.my-stat-grid article {
+  min-height: 88px;
+}
+
+.my-action-panel {
+  gap: 10px;
+  padding: 12px;
+}
+
+.my-install-hint,
+.my-version-label,
+.my-supabase-status {
+  text-align: center;
+}
+
+button {
+  transition:
+    transform 120ms ease,
+    opacity 120ms ease,
+    background-color 120ms ease;
+}
+
+button:active {
+  transform: scale(0.985);
+}
+
+button:disabled:active {
+  transform: none;
+}
+
+@media (min-width: 376px) {
+  .app-shell.ds-app-shell {
+    width: min(100%, 390px);
+  }
+}
+
+@media (min-width: 431px) {
+  #root {
+    max-width: 430px;
+  }
+
+  .app-shell.ds-app-shell {
+    width: 430px;
+  }
+}
+
+@media (max-width: 374px) {
+  .app-shell.ds-app-shell {
+    width: 100%;
+    border-radius: 0;
+  }
+
+  .page {
+    padding: 18px;
+  }
+
+  .detail-image {
+    width: calc(100% + 36px);
+    margin-right: -18px;
+    margin-left: -18px;
+  }
+
+  .home-artist-list {
+    margin: 0 -18px;
+    padding-right: 18px;
+    padding-left: 18px;
+  }
 }

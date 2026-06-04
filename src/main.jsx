@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import { registerSW } from 'virtual:pwa-register';
 import App from './App.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import './styles/global.css';
@@ -15,6 +16,18 @@ if (import.meta.env.DEV && 'serviceWorker' in navigator) {
     .catch((error) => {
       console.warn('Failed to unregister development service worker.', error);
     });
+}
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  registerSW({
+    immediate: true,
+    onRegisteredSW: (_swUrl, registration) => {
+      registration?.update();
+    },
+    onRegisterError: (error) => {
+      console.warn('GOYO service worker registration failed.', error);
+    },
+  });
 }
 
 if (import.meta.env.DEV) {
