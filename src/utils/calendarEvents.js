@@ -9,6 +9,22 @@ export const createCalendarEvent = (news) => ({
   location: news.location || '',
   artistName: news.artistName || '',
   type: news.type || 'concert',
+  imageUrl: news.imageUrl || news.image_url || '',
+  newsItem: {
+    id: news.id,
+    artistId: news.artistId || '',
+    artistName: news.artistName || '',
+    type: news.type || 'concert',
+    title: news.title || '제목 없는 소식',
+    description: news.description || '',
+    imageUrl: news.imageUrl || news.image_url || '',
+    image_url: news.imageUrl || news.image_url || '',
+    date: news.date || '',
+    startTime: news.startTime || news.time || '',
+    location: news.location || '',
+    sourceUrl: news.sourceUrl || '',
+    createdAt: news.createdAt || `${news.date || ''}T00:00:00.000Z`,
+  },
 });
 
 export const isCalendarEvent = (event) => {

@@ -17,6 +17,7 @@ export default defineConfig({
         'branding/logo/goyo-header-logo.svg',
         'branding/logo/goyo-wordmark.svg',
         'branding/splash/splash-logo.svg',
+        'sw-push-listener.js',
       ],
       manifest: false,
       devOptions: {
@@ -26,6 +27,7 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
+        importScripts: ['/sw-push-listener.js'],
       },
     }),
   ],

@@ -14,6 +14,7 @@ import {
   readCachedNewsItems,
   writeCachedNewsItems,
 } from '../utils/newsCache.js';
+import { dedupeNewsItems, filterPreviewNews } from '../utils/newsRanking.js';
 
 const newsTypeLabels = {
   concert: '공연',
@@ -23,23 +24,81 @@ const newsTypeLabels = {
 };
 
 const SWIPE_THRESHOLD = 72;
+const PROCESSED_PREVIEW_NEWS_IDS_KEY = 'processedPreviewNewsIds';
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-const sortByCreatedAtDesc = (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '');
+const getLocalDateKey = () => {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const date = String(today.getDate()).padStart(2, '0');
 
-const uniqueNews = (items) => {
-  const seenIds = new Set();
-  const safeItems = Array.isArray(items) ? items : [];
+  return `${year}-${month}-${date}`;
+};
 
-  return safeItems.filter((item) => {
-    if (!item?.id || seenIds.has(item.id)) {
-      return false;
-    }
+const getProcessedPreviewNewsIdsKey = (artistIds) => {
+  const scope = [...new Set((Array.isArray(artistIds) ? artistIds : []).filter(Boolean))]
+    .sort()
+    .join('|') || 'none';
 
-    seenIds.add(item.id);
-    return true;
-  });
+  return `${PROCESSED_PREVIEW_NEWS_IDS_KEY}:${getLocalDateKey()}:${scope}`;
+};
+
+const readProcessedPreviewNewsIds = (storageKey) => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(storageKey) || '[]');
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeProcessedPreviewNewsIds = (storageKey, newsIds) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.sessionStorage.setItem(storageKey, JSON.stringify([...new Set(newsIds.filter(Boolean))]));
+};
+
+const debugPreviewFlow = (payload) => {
+  if (import.meta.env?.DEV) {
+    console.log('[GOYO preview]', payload);
+  }
+};
+
+const PREVIEW_DISPLAY_LIMIT = 20;
+
+const isSpotifyAlbumNews = (news) => news?.type === 'album' && String(news?.id || '').startsWith('spotify_album_');
+
+const getArtistIdCandidates = (news) =>
+  [news?.artistId, news?.artist_id, news?.frontendArtistId, news?.spotifyArtistId, news?.externalArtistId]
+    .filter(Boolean);
+
+const isNewsForFollowedArtists = (news, artistIds) => {
+  const followedIdSet = new Set(Array.isArray(artistIds) ? artistIds.filter(Boolean) : []);
+
+  if (followedIdSet.size === 0) {
+    return false;
+  }
+
+  return getArtistIdCandidates(news).some((artistId) => followedIdSet.has(artistId));
+};
+
+const getPreviewDisplayNews = (items) => {
+  const safeItems = dedupeNewsItems(items);
+  const previewEligibleNews = filterPreviewNews(safeItems);
+  const previewEligibleIds = new Set(previewEligibleNews.map((news) => news.id));
+  const spotifyAlbumFallbackNews = safeItems.filter(
+    (news) => isSpotifyAlbumNews(news) && !previewEligibleIds.has(news.id),
+  );
+
+  return dedupeNewsItems([...previewEligibleNews, ...spotifyAlbumFallbackNews]).slice(0, PREVIEW_DISPLAY_LIMIT);
 };
 
 export default function PreviewPage() {
@@ -49,6 +108,7 @@ export default function PreviewPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [newsItems, setNewsItems] = useState([]);
   const [completedNewsIds, setCompletedNewsIds] = useState([]);
+  const [hasImageError, setHasImageError] = useState(false);
   const [newsState, setNewsState] = useState({
     error: null,
     isLoading: true,
@@ -72,6 +132,10 @@ export default function PreviewPage() {
   const safeCompletedNewsIds = Array.isArray(completedNewsIds) ? completedNewsIds : [];
   const safeCalendarEvents = getSafeCalendarEvents(calendarEvents);
   const followedArtistIdsKey = safeFollowedArtistIds.join('|');
+  const processedPreviewNewsIdsKey = useMemo(
+    () => getProcessedPreviewNewsIdsKey(safeFollowedArtistIds),
+    [followedArtistIdsKey],
+  );
 
   useEffect(() => {
     let isCancelled = false;
@@ -108,7 +172,7 @@ export default function PreviewPage() {
 
     if (cachedPreviewNews.length > 0) {
       setNewsItems(cachedPreviewNews);
-      setCompletedNewsIds([]);
+      setCompletedNewsIds(readProcessedPreviewNewsIds(processedPreviewNewsIdsKey));
       setCurrentIndex(0);
     }
 
@@ -129,7 +193,7 @@ export default function PreviewPage() {
 
           setNewsItems(nextItems);
           writeCachedNewsItems(PREVIEW_NEWS_CACHE_KEY, nextItems);
-          setCompletedNewsIds([]);
+          setCompletedNewsIds(readProcessedPreviewNewsIds(processedPreviewNewsIdsKey));
           setCurrentIndex(0);
           setNewsState({ error: null, isLoading: false });
         }
@@ -139,7 +203,7 @@ export default function PreviewPage() {
 
         if (!isCancelled) {
           setNewsItems(cachedPreviewNews);
-          setCompletedNewsIds([]);
+          setCompletedNewsIds(readProcessedPreviewNewsIds(processedPreviewNewsIdsKey));
           setCurrentIndex(0);
           setNewsState({
             error: cachedPreviewNews.length > 0 ? null : '네트워크 연결을 확인해주세요.',
@@ -151,19 +215,68 @@ export default function PreviewPage() {
     return () => {
       isCancelled = true;
     };
-  }, [followedArtistIdsKey, isOnline]);
+  }, [followedArtistIdsKey, isOnline, processedPreviewNewsIdsKey]);
 
   const visibleNews = useMemo(() => {
-    return uniqueNews(newsItems)
+    return getPreviewDisplayNews(newsItems)
       .filter((news) => {
-        const isFollowed = safeFollowedArtistIds.includes(news.artistId);
+        const isFollowed = isNewsForFollowedArtists(news, safeFollowedArtistIds);
         const isHidden = safeHiddenNewsIds.includes(news.id);
         const isCompleted = safeCompletedNewsIds.includes(news.id);
 
         return isFollowed && !isHidden && !isCompleted;
-      })
-      .sort(sortByCreatedAtDesc);
+      });
   }, [newsItems, safeFollowedArtistIds, safeHiddenNewsIds, safeCompletedNewsIds]);
+
+  const eligiblePreviewNews = useMemo(() => {
+    return getPreviewDisplayNews(newsItems)
+      .filter((news) => isNewsForFollowedArtists(news, safeFollowedArtistIds))
+      .filter((news) => !safeHiddenNewsIds.includes(news.id));
+  }, [newsItems, safeFollowedArtistIds, safeHiddenNewsIds]);
+
+  useEffect(() => {
+    const safeNewsItems = dedupeNewsItems(newsItems);
+    const spotifyAlbumNews = safeNewsItems.filter((news) => news.id?.startsWith?.('spotify_album_'));
+    const previewFilteredNews = filterPreviewNews(safeNewsItems);
+    const previewFilteredIds = new Set(previewFilteredNews.map((news) => news.id));
+    const spotifyAlbumNewsFilteredByDate = spotifyAlbumNews.filter((news) => !previewFilteredIds.has(news.id));
+
+    if (import.meta.env?.DEV) {
+      console.log('spotifyAlbumNews', spotifyAlbumNews);
+    }
+
+    debugPreviewFlow({
+      followedArtistIds: safeFollowedArtistIds,
+      spotifyAlbumNewsCount: spotifyAlbumNews.length,
+      spotifyAlbumNewsWithImages: spotifyAlbumNews.filter((news) => news.imageUrl || news.image_url).length,
+      spotifyAlbumNewsExcludedByPreviewFilterCount: spotifyAlbumNewsFilteredByDate.length,
+      spotifyAlbumNewsSample: spotifyAlbumNews.slice(0, 3).map((news) => ({
+        id: news.id,
+        title: news.title,
+        type: news.type,
+        date: news.date,
+        artistId: news.artistId,
+        spotifyArtistId: news.spotifyArtistId,
+        imageUrl: news.imageUrl || news.image_url || '',
+        description: news.description,
+      })),
+      supabaseNewsCount: safeNewsItems.length - spotifyAlbumNews.length,
+      mergedNewsCount: safeNewsItems.length,
+      hiddenNewsIdsCount: safeHiddenNewsIds.length,
+      savedEventIds: safeCalendarEvents.map((event) => event.newsId).filter(Boolean),
+      filteredPreviewNewsCount: visibleNews.length,
+      processedPreviewNewsIds: safeCompletedNewsIds,
+      processedPreviewNewsIdsKey,
+    });
+  }, [
+    newsItems,
+    safeFollowedArtistIds,
+    safeHiddenNewsIds,
+    safeCompletedNewsIds,
+    safeCalendarEvents,
+    visibleNews.length,
+    processedPreviewNewsIdsKey,
+  ]);
 
   useEffect(() => {
     if (currentIndex > 0 && currentIndex >= visibleNews.length) {
@@ -173,6 +286,24 @@ export default function PreviewPage() {
 
   const currentNews = visibleNews[currentIndex];
   const isAddedToCalendar = currentNews ? hasCalendarEvent(safeCalendarEvents, currentNews.id) : false;
+  const currentImageUrl = currentNews?.imageUrl || currentNews?.image_url || '';
+  const previewTotalCount = eligiblePreviewNews.length;
+  const currentProgressIndex = currentNews
+    ? Math.min(previewTotalCount, previewTotalCount - visibleNews.length + currentIndex + 1)
+    : previewTotalCount;
+  const indicatorDotCount = Math.min(previewTotalCount, 5);
+  const activeIndicatorIndex = (() => {
+    if (indicatorDotCount <= 1 || previewTotalCount <= 1) {
+      return 0;
+    }
+
+    const progressRatio = (currentProgressIndex - 1) / (previewTotalCount - 1);
+    return clamp(Math.round(progressRatio * (indicatorDotCount - 1)), 0, indicatorDotCount - 1);
+  })();
+
+  useEffect(() => {
+    setHasImageError(false);
+  }, [currentNews?.id, currentImageUrl]);
 
   const markNewsCompleted = (newsId) => {
     if (!newsId) {
@@ -181,7 +312,10 @@ export default function PreviewPage() {
 
     setCompletedNewsIds((currentIds) => {
       const safeIds = Array.isArray(currentIds) ? currentIds : [];
-      return safeIds.includes(newsId) ? safeIds : [...safeIds, newsId];
+      const nextIds = safeIds.includes(newsId) ? safeIds : [...safeIds, newsId];
+
+      writeProcessedPreviewNewsIds(processedPreviewNewsIdsKey, nextIds);
+      return nextIds;
     });
   };
 
@@ -477,7 +611,16 @@ export default function PreviewPage() {
           onMouseMove={handleMouseMove}
           onMouseUp={finishDrag}
         >
-          <div className="preview-image-placeholder" aria-hidden="true" />
+          {currentImageUrl && !hasImageError ? (
+            <img
+              className="preview-image"
+              src={currentImageUrl}
+              alt={`${currentNews.title} 이미지`}
+              onError={() => setHasImageError(true)}
+            />
+          ) : (
+            <div className="preview-image-placeholder" aria-hidden="true" />
+          )}
 
           <div className="news-preview-top">
             <span className="preview-artist-name">{currentNews.artistName}</span>
@@ -505,10 +648,15 @@ export default function PreviewPage() {
           </div>
 
           <div className="preview-indicator" aria-hidden="true">
-            {visibleNews.map((news, index) => (
-              <span className={index === currentIndex ? 'is-active' : ''} key={news.id} />
+            {Array.from({ length: indicatorDotCount }, (_, index) => (
+              <span className={index === activeIndicatorIndex ? 'is-active' : ''} key={index} />
             ))}
           </div>
+          {previewTotalCount > 0 && (
+            <p className="preview-progress">
+              {currentProgressIndex} / {previewTotalCount}
+            </p>
+          )}
 
           <div className="preview-swipe-hints" aria-hidden="true">
             <span>← 관심없음</span>

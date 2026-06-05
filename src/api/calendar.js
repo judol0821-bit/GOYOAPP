@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
 import { createCalendarEvent, getSafeCalendarEvents } from '../utils/calendarEvents.js';
 import { isBrowserOffline } from '../utils/network.js';
+import { HOME_NEWS_CACHE_KEY, PREVIEW_NEWS_CACHE_KEY, mergeCachedNewsItems } from '../utils/newsCache.js';
 import { isUuid, mapCalendarEventFromSupabase, toSupabaseCalendarPayload } from './mappers.js';
 
 const CALENDAR_EVENTS_KEY = 'calendarEvents';
@@ -53,6 +54,9 @@ export async function addCalendarEvent(anonymousUserId, newsItem) {
   if (!newsItem) {
     return null;
   }
+
+  mergeCachedNewsItems(HOME_NEWS_CACHE_KEY, [newsItem]);
+  mergeCachedNewsItems(PREVIEW_NEWS_CACHE_KEY, [newsItem]);
 
   if (!isBrowserOffline() && isSupabaseConfigured() && anonymousUserId && isUuid(newsItem.id)) {
     try {

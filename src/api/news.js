@@ -1,9 +1,11 @@
 import { mockNews } from '../data/mockNews.js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase.js';
+import { readArtistSnapshots } from '../utils/artistSnapshots.js';
 import { isBrowserOffline } from '../utils/network.js';
 import { filterCachedNewsByArtistIds, findCachedNewsById, readAllCachedNewsItems } from '../utils/newsCache.js';
+import { dedupeNewsItems, sortNewsItems } from '../utils/newsRanking.js';
 import { apiFetch, hasApiBaseUrl } from './client.js';
-import { dedupeNewsItems, isUuid, mapNewsFromSupabase } from './mappers.js';
+import { isUuid, mapNewsFromSupabase } from './mappers.js';
 import { getCachedSpotifyNewsById, getSpotifyArtistAlbums } from './spotify.js';
 
 const MOCK_ARTIST_IDS = new Set(mockNews.map((news) => news.artistId).filter(Boolean));
@@ -24,15 +26,22 @@ const KNOWN_SPOTIFY_ARTIST_IDS = {
   'mock:baekyerin': '6dhfy4ByARPJdPtMyrUYJK',
   baekyerin: '6dhfy4ByARPJdPtMyrUYJK',
   '백예린': '6dhfy4ByARPJdPtMyrUYJK',
+  'mock:blackskirts': '6WeDO4GynFmK4OxwkBzMW8',
+  blackskirts: '6WeDO4GynFmK4OxwkBzMW8',
+  'the black skirts': '6WeDO4GynFmK4OxwkBzMW8',
+  '검정치마': '6WeDO4GynFmK4OxwkBzMW8',
+  'mock:silicagel': '2kxVxKOgoefmgkwoHipHsn',
+  silicagel: '2kxVxKOgoefmgkwoHipHsn',
+  'silica gel': '2kxVxKOgoefmgkwoHipHsn',
+  '실리카겔': '2kxVxKOgoefmgkwoHipHsn',
+  'mock:wavetoearth': '5069JTmv5ZDyPeZaCCXiCg',
+  wavetoearth: '5069JTmv5ZDyPeZaCCXiCg',
+  'wave to earth': '5069JTmv5ZDyPeZaCCXiCg',
 };
 
 const getUniqueNews = (newsItems) => {
   return dedupeNewsItems(newsItems);
 };
-
-const getNewsSortValue = (news) => String(news?.createdAt || `${news?.date || ''}T${news?.startTime || '00:00'}:00`);
-
-const sortByCreatedAtDesc = (a, b) => getNewsSortValue(b).localeCompare(getNewsSortValue(a));
 
 const normalizeLookupText = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
@@ -89,13 +98,19 @@ const filterByArtistIds = (newsItems, artistIds) => {
     return [];
   }
 
-  return getUniqueNews(newsItems)
-    .filter((news) => safeArtistIds.includes(news.artistId))
-    .sort(sortByCreatedAtDesc);
+  const followedIdSet = new Set(safeArtistIds);
+
+  return sortNewsItems(
+    getUniqueNews(newsItems).filter((news) =>
+      [news.artistId, news.artist_id, news.frontendArtistId, news.spotifyArtistId, news.externalArtistId]
+        .filter(Boolean)
+        .some((artistId) => followedIdSet.has(artistId)),
+    ),
+  );
 };
 
 const getCachedNewsByArtistIds = (artistIds) => {
-  return filterCachedNewsByArtistIds(readAllCachedNewsItems(), artistIds).sort(sortByCreatedAtDesc);
+  return sortNewsItems(filterCachedNewsByArtistIds(readAllCachedNewsItems(), artistIds));
 };
 
 const getFallbackNewsByArtistIds = (artistIds) => {
@@ -111,9 +126,36 @@ const getFallbackNewsByArtistIds = (artistIds) => {
 const resolveSupabaseArtistIds = async (artistIds) => {
   const frontendArtistIdBySupabaseId = new Map();
   const spotifyArtistIdByFrontendId = new Map();
+  const followedArtists = [];
   const safeArtistIds = Array.isArray(artistIds) ? artistIds.filter(Boolean) : [];
   const uuidIds = safeArtistIds.filter(isUuid);
   const legacyIds = safeArtistIds.filter((artistId) => !isUuid(artistId));
+  const artistSnapshots = readArtistSnapshots();
+  const snapshotById = new Map();
+
+  artistSnapshots.forEach((snapshot) => {
+    if (snapshot?.id) {
+      snapshotById.set(snapshot.id, snapshot);
+    }
+
+    if (snapshot?.externalId) {
+      snapshotById.set(snapshot.externalId, snapshot);
+    }
+  });
+
+  const enrichArtistWithSnapshot = (artist) => {
+    const snapshot = snapshotById.get(artist?.id) || snapshotById.get(artist?.external_id);
+
+    if (!snapshot) {
+      return artist;
+    }
+
+    return {
+      ...artist,
+      external_id: artist.external_id || snapshot.externalId || '',
+      source: artist.source || snapshot.source || 'manual',
+    };
+  };
 
   uuidIds.forEach((artistId) => {
     frontendArtistIdBySupabaseId.set(artistId, artistId);
@@ -129,11 +171,17 @@ const resolveSupabaseArtistIds = async (artistIds) => {
       throw error;
     }
 
-    (data || []).forEach((artist) => {
+    (data || []).map(enrichArtistWithSnapshot).forEach((artist) => {
+      followedArtists.push(artist);
       const spotifyArtistId = getSpotifyArtistIdForArtist(artist);
 
       if (spotifyArtistId) {
         spotifyArtistIdByFrontendId.set(spotifyArtistId, artist.id);
+      } else if (artist?.source === 'spotify') {
+        debugNewsFlow({
+          warning: 'Spotify artist is missing external_id. Album lookup skipped.',
+          artist,
+        });
       }
     });
   }
@@ -149,7 +197,8 @@ const resolveSupabaseArtistIds = async (artistIds) => {
       throw error;
     }
 
-    (data || []).forEach((artist) => {
+    (data || []).map(enrichArtistWithSnapshot).forEach((artist) => {
+      followedArtists.push(artist);
       const matchedLegacyId = legacyIds.find(
         (artistId) => artist.external_id === artistId || artist.external_id === `mock:${artistId}`,
       );
@@ -173,6 +222,7 @@ const resolveSupabaseArtistIds = async (artistIds) => {
 
   return {
     frontendArtistIdBySupabaseId,
+    followedArtists,
     supabaseArtistIds: [...new Set([...uuidIds, ...Array.from(frontendArtistIdBySupabaseId.keys())])],
     spotifyArtistIdByFrontendId,
   };
@@ -195,22 +245,39 @@ const loadSpotifyAlbumNews = async (spotifyArtistIdByFrontendId) => {
     try {
       const albums = await getSpotifyArtistAlbums(spotifyArtistId);
       const safeAlbums = Array.isArray(albums) ? albums : [];
+      const mappedAlbums = safeAlbums
+        .filter(Boolean)
+        .map((news) => ({
+          ...news,
+          artistId: frontendArtistId || news.artistId || spotifyArtistId,
+          frontendArtistId: frontendArtistId || '',
+          spotifyArtistId,
+          externalArtistId: spotifyArtistId,
+        }));
 
-      newsGroups.push(
-        safeAlbums
-          .filter(Boolean)
-          .map((news) => ({
-            ...news,
-            artistId: frontendArtistId || news.artistId || spotifyArtistId,
+      debugNewsFlow({
+        spotifyAlbumLookup: {
+          spotifyArtistId,
+          frontendArtistId,
+          albumNewsCount: mappedAlbums.length,
+          albumNewsSample: mappedAlbums.slice(0, 2).map((news) => ({
+            id: news.id,
+            type: news.type,
+            date: news.date,
+            artistId: news.artistId,
+            artistName: news.artistName,
           })),
-      );
+        },
+      });
+
+      newsGroups.push(mappedAlbums);
     } catch (error) {
       console.warn('Failed to load Spotify album news for artist.', { spotifyArtistId, error });
       newsGroups.push([]);
     }
   }
 
-  return getUniqueNews(newsGroups.flat()).sort(sortByCreatedAtDesc);
+  return sortNewsItems(newsGroups.flat());
 };
 
 export async function getNewsByFollowedArtists(artistIds) {
@@ -226,7 +293,7 @@ export async function getNewsByFollowedArtists(artistIds) {
 
   if (isSupabaseConfigured()) {
     try {
-      const { frontendArtistIdBySupabaseId, supabaseArtistIds, spotifyArtistIdByFrontendId } =
+      const { frontendArtistIdBySupabaseId, followedArtists, supabaseArtistIds, spotifyArtistIdByFrontendId } =
         await resolveSupabaseArtistIds(safeArtistIds);
       let supabaseNews = [];
 
@@ -258,11 +325,15 @@ export async function getNewsByFollowedArtists(artistIds) {
         console.warn('Failed to merge Spotify album news. Continuing with Supabase news.', error);
       }
 
-      const mergedNews = getUniqueNews([...supabaseNews, ...spotifyNews]).sort(sortByCreatedAtDesc);
+      const mergedNews = sortNewsItems([...supabaseNews, ...spotifyNews]);
       const filteredNews = filterByArtistIds(mergedNews, safeArtistIds);
 
       debugNewsFlow({
         followedArtistIds: safeArtistIds,
+        followedArtists,
+        spotifyEligibleArtists: followedArtists.filter((artist) => {
+          return spotifyArtistIdByFrontendId.has(getSpotifyArtistIdForArtist(artist));
+        }),
         supabaseArtistIds,
         spotifyArtistIds: Array.from(spotifyArtistIdByFrontendId.keys()),
         followedArtistsWithSpotifyAlbums: Array.from(spotifyArtistIdByFrontendId.values()),

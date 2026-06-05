@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { getArtistById } from '../api/artists.js';
@@ -17,6 +17,18 @@ import {
   readCachedNewsItems,
   writeCachedNewsItems,
 } from '../utils/newsCache.js';
+import { filterHomeNews, sortNewsItems } from '../utils/newsRanking.js';
+import {
+  DEFAULT_NOTIFICATION_SETTINGS,
+  getNotificationBody,
+  getNotificationTitle,
+  getSafeNotificationSettings,
+  shouldNotifyNews,
+} from '../utils/notificationRules.js';
+import {
+  getNotificationPermission,
+  showLocalNotification,
+} from '../utils/notifications.js';
 
 const typeLabels = {
   concert: '공연',
@@ -85,8 +97,6 @@ const sortByDate = (a, b) => {
 
   return (a.startTime || a.time || '').localeCompare(b.startTime || b.time || '');
 };
-
-const sortByCreatedAtDesc = (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '');
 
 const uniqueById = (items) => {
   const seenIds = new Set();
@@ -162,13 +172,20 @@ export default function HomePage() {
   const [followedArtistSnapshots] = useLocalStorage('followedArtistSnapshots', []);
   const [hiddenNewsIds, setHiddenNewsIds] = useLocalStorage('hiddenNewsIds', []);
   const [calendarEvents] = useLocalStorage('calendarEvents', []);
+  const [notificationSettings] = useLocalStorage('notificationSettings', DEFAULT_NOTIFICATION_SETTINGS);
+  const [notifiedNewsIds, setNotifiedNewsIds] = useLocalStorage('notifiedNewsIds', []);
 
   const anonymousUserId = useMemo(() => getAnonymousUserId(), []);
+  const didCheckNotificationRef = useRef(false);
   const isOnline = useOnlineStatus();
   const normalizedSearchQuery = normalizeSearchText(searchQuery);
   const safeFollowedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
   const safeArtistSnapshots = getSafeArtistSnapshots(followedArtistSnapshots);
   const safeHiddenNewsIds = Array.isArray(hiddenNewsIds) ? hiddenNewsIds : [];
+  const safeNotifiedNewsIds = Array.isArray(notifiedNewsIds) ? notifiedNewsIds : [];
+  const safeNotificationSettings = getSafeNotificationSettings(notificationSettings);
+  const notificationSettingsKey = JSON.stringify(safeNotificationSettings);
+  const notifiedNewsIdsKey = safeNotifiedNewsIds.join('|');
   const safeCalendarEvents = getSafeCalendarEvents(calendarItems ?? calendarEvents);
   const followedArtistIdsKey = safeFollowedArtistIds.join('|');
   const followedArtistSnapshotsKey = safeArtistSnapshots
@@ -282,7 +299,7 @@ export default function HomePage() {
   }, [artistItems, safeFollowedArtistIds]);
 
   const followedNews = useMemo(() => {
-    return uniqueById(newsItems)
+    return filterHomeNews(newsItems)
       .filter((news) => safeFollowedArtistIds.includes(news.artistId))
       .filter((news) => !safeHiddenNewsIds.includes(news.id));
   }, [newsItems, safeFollowedArtistIds, safeHiddenNewsIds]);
@@ -296,7 +313,7 @@ export default function HomePage() {
   }, [followedNews, normalizedSearchQuery]);
 
   const importantNews = useMemo(() => {
-    return [...visibleNews].sort(sortByDate)[0];
+    return sortNewsItems(visibleNews)[0];
   }, [visibleNews]);
 
   const upcomingEvents = useMemo(() => {
@@ -307,8 +324,52 @@ export default function HomePage() {
   }, [safeCalendarEvents, normalizedSearchQuery]);
 
   const latestNews = useMemo(() => {
-    return [...visibleNews].sort(sortByCreatedAtDesc).slice(0, 4);
+    return sortNewsItems(visibleNews).slice(0, 4);
   }, [visibleNews]);
+
+  useEffect(() => {
+    if (
+      homeState.isLoading ||
+      didCheckNotificationRef.current ||
+      !safeNotificationSettings.enabled ||
+      getNotificationPermission() !== 'granted'
+    ) {
+      return undefined;
+    }
+
+    const notifiedIds = new Set(safeNotifiedNewsIds);
+    const candidate = sortNewsItems(followedNews).find((news) => {
+      return shouldNotifyNews(news, safeNotificationSettings) && !notifiedIds.has(news.id);
+    });
+
+    if (!candidate) {
+      didCheckNotificationRef.current = true;
+      return undefined;
+    }
+
+    let isCancelled = false;
+    didCheckNotificationRef.current = true;
+
+    showLocalNotification(getNotificationTitle(candidate), {
+      body: getNotificationBody(candidate),
+      tag: `goyo-${candidate.id}`,
+      data: {
+        newsId: candidate.id,
+        sourceUrl: candidate.sourceUrl || '',
+      },
+    }).then((didShowNotification) => {
+      if (!isCancelled && didShowNotification) {
+        setNotifiedNewsIds((currentIds) => {
+          const safeIds = Array.isArray(currentIds) ? currentIds : [];
+          return safeIds.includes(candidate.id) ? safeIds : [...safeIds, candidate.id];
+        });
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [homeState.isLoading, followedNews, notificationSettingsKey, notifiedNewsIdsKey, setNotifiedNewsIds]);
 
   const artistEmptyCopy = (() => {
     if (normalizedSearchQuery) {

@@ -49,27 +49,37 @@ const getErrorMessage = async (response: Response) => {
 const knownArtistProfiles = [
   {
     spotifyId: '3HqSLMAZ3g3d5poNaI7GOU',
-    aliases: ['아이유', 'iu'],
+    aliases: ['\uC544\uC774\uC720', 'iu'],
     genres: ['K-Pop', 'Ballad', 'Singer-songwriter'],
   },
   {
+    spotifyId: '6HvZYsbFfjnjFrWF950C9d',
+    aliases: ['\uB274\uC9C4\uC2A4', 'newjeans', 'new jeans'],
+    genres: ['K-Pop'],
+  },
+  {
     spotifyId: '6dhfy4ByARPJdPtMyrUYJK',
-    aliases: ['백예린', 'yerin baek', 'baek yerin'],
+    aliases: ['\uBC31\uC608\uB9B0', 'yerin baek', 'baek yerin'],
     genres: ['R&B', 'Soul', 'Indie Pop'],
   },
   {
     spotifyId: '57okaLdCtv3nVBSn5otJkp',
-    aliases: ['혁오', 'hyukoh'],
+    aliases: ['\uD601\uC624', 'hyukoh'],
     genres: ['Indie Rock', 'Alternative', 'Band'],
   },
   {
     spotifyId: '6WeDO4GynFmK4OxwkBzMW8',
-    aliases: ['검정치마', 'the black skirts'],
+    aliases: ['\uAC80\uC815\uCE58\uB9C8', 'the black skirts'],
     genres: ['Indie Rock', 'Singer-songwriter'],
   },
   {
+    spotifyId: '2SY6OktZyMLdOnscX3DCyS',
+    aliases: ['\uC794\uB098\uBE44', 'jannabi'],
+    genres: ['Indie Rock', 'Band'],
+  },
+  {
     spotifyId: '2kxVxKOgoefmgkwoHipHsn',
-    aliases: ['실리카겔', 'silica gel'],
+    aliases: ['\uC2E4\uB9AC\uCE74\uAC94', 'silica gel'],
     genres: ['Indie Rock', 'Alternative', 'Band'],
   },
   {
@@ -96,6 +106,14 @@ const getProfileByArtist = (artist: any) => {
       profile.spotifyId === artist?.id ||
       profile.aliases.some((alias) => normalizeText(alias) === normalizedName),
   );
+};
+
+const getBestImageUrl = (images: unknown) => {
+  if (!Array.isArray(images)) {
+    return '';
+  }
+
+  return images.find((image: any) => typeof image?.url === 'string' && image.url)?.url || '';
 };
 
 const getSearchQueries = (query: string) => {
@@ -146,6 +164,10 @@ const scoreArtist = (artist: any, query: string, queryProfile: any, queryIndex: 
 
   if (Array.isArray(artist?.genres) && artist.genres.length > 0) {
     score += 4;
+  }
+
+  if (typeof artist?.popularity === 'number') {
+    score += artist.popularity * 0.25;
   }
 
   return score - queryIndex * 3 - itemIndex * 0.1;
@@ -200,7 +222,7 @@ const getSpotifyToken = async () => {
 };
 
 const mapArtist = (artist: any) => {
-  const imageUrl = Array.isArray(artist?.images) ? artist.images[0]?.url || '' : '';
+  const imageUrl = getBestImageUrl(artist?.images);
   const profile = getProfileByArtist(artist);
   const genres = Array.isArray(artist?.genres) && artist.genres.length > 0
     ? artist.genres
@@ -214,7 +236,32 @@ const mapArtist = (artist: any) => {
     genres,
     source: 'spotify',
     spotifyUrl: artist?.external_urls?.spotify || '',
+    popularity: typeof artist?.popularity === 'number' ? artist.popularity : undefined,
   };
+};
+
+const getArtistDedupeKey = (artist: any) => {
+  const profile = getProfileByArtist(artist);
+
+  if (profile?.spotifyId) {
+    return `profile:${profile.spotifyId}`;
+  }
+
+  return `name:${normalizeText(artist?.name)}`;
+};
+
+const fetchSpotifyArtistById = async (accessToken: string, artistId: string) => {
+  const artistResponse = await fetch(`https://api.spotify.com/v1/artists/${encodeURIComponent(artistId)}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!artistResponse.ok) {
+    return null;
+  }
+
+  return artistResponse.json();
 };
 
 const fetchSpotifyArtists = async (accessToken: string, query: string) => {
@@ -256,6 +303,14 @@ serve(async (request) => {
     const artistById = new Map<string, { artist: any; score: number }>();
     const searchQueries = getSearchQueries(query);
 
+    if (queryProfile?.spotifyId) {
+      const exactArtist = await fetchSpotifyArtistById(accessToken, queryProfile.spotifyId);
+
+      if (exactArtist?.id) {
+        artistById.set(exactArtist.id, { artist: exactArtist, score: 500 });
+      }
+    }
+
     const artistGroups = await Promise.all(
       searchQueries.map((searchQuery) => fetchSpotifyArtists(accessToken, searchQuery)),
     );
@@ -280,13 +335,13 @@ serve(async (request) => {
       .map(({ artist }) => mapArtist(artist))
       .filter((artist) => artist.id)
       .filter((artist, index, mappedArtists) => {
-        const normalizedName = normalizeText(artist.name);
+        const dedupeKey = getArtistDedupeKey(artist);
 
-        if (!normalizedName) {
+        if (!dedupeKey) {
           return true;
         }
 
-        return mappedArtists.findIndex((candidate) => normalizeText(candidate.name) === normalizedName) === index;
+        return mappedArtists.findIndex((candidate) => getArtistDedupeKey(candidate) === dedupeKey) === index;
       })
       .slice(0, 10);
 

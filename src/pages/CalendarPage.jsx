@@ -74,6 +74,29 @@ const getCalendarCells = (monthDate) => {
   });
 };
 
+function CalendarEventCover({ event }) {
+  const [hasImageError, setHasImageError] = useState(false);
+  const imageUrl = event?.imageUrl || event?.newsItem?.imageUrl || event?.newsItem?.image_url || '';
+
+  useEffect(() => {
+    setHasImageError(false);
+  }, [event?.id, imageUrl]);
+
+  if (!imageUrl || hasImageError) {
+    return <span className="calendar-event-cover is-placeholder" aria-hidden="true" />;
+  }
+
+  return (
+    <img
+      className="calendar-event-cover"
+      src={imageUrl}
+      alt={`${event.title} 이미지`}
+      loading="lazy"
+      onError={() => setHasImageError(true)}
+    />
+  );
+}
+
 export default function CalendarPage() {
   const navigate = useNavigate();
   const [calendarEvents] = useLocalStorage('calendarEvents', []);
@@ -237,6 +260,7 @@ export default function CalendarPage() {
                   disabled={!canOpenDetail}
                   onClick={() => handleEventClick(event)}
                 >
+                  <CalendarEventCover event={event} />
                   <time>{event.time}</time>
                   <div>
                     <span>{typeLabels[event.type] || event.type}</span>

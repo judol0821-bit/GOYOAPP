@@ -5,3 +5,9 @@ verify_jwt = false
 
 [functions.spotify-artist-albums]
 verify_jwt = false
+
+[functions.send-test-notification]
+verify_jwt = false
+
+[functions.check-new-music-notifications]
+verify_jwt = false

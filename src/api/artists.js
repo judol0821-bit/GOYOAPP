@@ -10,6 +10,129 @@ const normalizeText = (value) => (typeof value === 'string' ? value.trim().toLow
 
 const getUniqueArtists = (artists) => dedupeArtists(artists);
 
+const ARTIST_ALIAS_GROUPS = [
+  ['iu', '아이유'],
+  ['yerin baek', 'baek yerin', '백예린'],
+  ['hyukoh', '혁오'],
+  ['the black skirts', '검정치마'],
+  ['silica gel', '실리카겔'],
+  ['jannabi', '잔나비'],
+  ['newjeans', 'new jeans', '뉴진스'],
+  ['wave to earth'],
+];
+
+const normalizeArtistName = (value) =>
+  normalizeText(value)
+    .replace(/[._\-']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const artistAliasMap = ARTIST_ALIAS_GROUPS.reduce((aliasMap, aliases) => {
+  const canonicalName = normalizeArtistName(aliases[0]);
+
+  aliases.forEach((alias) => {
+    aliasMap.set(normalizeArtistName(alias), canonicalName);
+  });
+
+  return aliasMap;
+}, new Map());
+
+const getCanonicalArtistName = (value) => {
+  const normalizedName = normalizeArtistName(value);
+  return artistAliasMap.get(normalizedName) || normalizedName;
+};
+
+const getArtistGenres = (artist) => (Array.isArray(artist?.genres) ? artist.genres : []);
+
+const hasArtistImage = (artist) => Boolean(artist?.imageUrl || artist?.image_url);
+
+const getArtistPopularity = (artist) => {
+  const popularity = Number(artist?.popularity);
+  return Number.isFinite(popularity) ? popularity : 0;
+};
+
+const getArtistSearchScore = (artist, query) => {
+  const normalizedQuery = normalizeArtistName(query);
+  const canonicalQuery = getCanonicalArtistName(query);
+  const normalizedName = normalizeArtistName(artist?.name);
+  const canonicalName = getCanonicalArtistName(artist?.name);
+  let score = 0;
+
+  if (canonicalQuery && canonicalName === canonicalQuery) {
+    score += 500;
+  }
+
+  if (normalizedQuery && normalizedName === normalizedQuery) {
+    score += 180;
+  }
+
+  if (artist?.source === 'spotify') {
+    score += 90;
+  }
+
+  if (hasArtistImage(artist)) {
+    score += 40;
+  }
+
+  if (normalizedQuery && normalizedName.includes(normalizedQuery)) {
+    score += 20;
+  }
+
+  score += getArtistPopularity(artist) * 0.25;
+
+  return score;
+};
+
+const mergeArtistDetails = (baseArtist, nextArtist, query) => {
+  const preferredArtist =
+    getArtistSearchScore(nextArtist, query) > getArtistSearchScore(baseArtist, query) ? nextArtist : baseArtist;
+  const secondaryArtist = preferredArtist === baseArtist ? nextArtist : baseArtist;
+  const preferredGenres = getArtistGenres(preferredArtist);
+  const secondaryGenres = getArtistGenres(secondaryArtist);
+
+  return {
+    ...preferredArtist,
+    externalId: preferredArtist.externalId || preferredArtist.external_id || secondaryArtist.externalId || secondaryArtist.external_id || '',
+    imageUrl: preferredArtist.imageUrl || preferredArtist.image_url || secondaryArtist.imageUrl || secondaryArtist.image_url || '',
+    genres: preferredGenres.length > 0 ? preferredGenres : secondaryGenres,
+    spotifyUrl: preferredArtist.spotifyUrl || preferredArtist.spotify_url || secondaryArtist.spotifyUrl || secondaryArtist.spotify_url || '',
+    popularity: getArtistPopularity(preferredArtist) || getArtistPopularity(secondaryArtist) || undefined,
+  };
+};
+
+const getArtistDedupeKeys = (artist) => [
+  artist?.id ? `id:${artist.id}` : '',
+  artist?.externalId || artist?.external_id ? `external:${normalizeText(artist.externalId || artist.external_id)}` : '',
+  artist?.name ? `name:${getCanonicalArtistName(artist.name)}` : '',
+].filter(Boolean);
+
+const mergeArtistSearchResults = (query, ...artistGroups) => {
+  const artists = artistGroups.flat().filter((artist) => artist?.id);
+  const mergedArtists = [];
+  const artistIndexByKey = new Map();
+
+  artists.forEach((artist) => {
+    const keys = getArtistDedupeKeys(artist);
+    const existingIndex = keys.map((key) => artistIndexByKey.get(key)).find((index) => index !== undefined);
+
+    if (existingIndex === undefined) {
+      const nextIndex = mergedArtists.length;
+      mergedArtists.push(artist);
+      keys.forEach((key) => artistIndexByKey.set(key, nextIndex));
+      return;
+    }
+
+    const mergedArtist = mergeArtistDetails(mergedArtists[existingIndex], artist, query);
+    mergedArtists[existingIndex] = mergedArtist;
+
+    [...new Set([...keys, ...getArtistDedupeKeys(mergedArtist)])].forEach((key) =>
+      artistIndexByKey.set(key, existingIndex),
+    );
+  });
+
+  return mergedArtists.sort((a, b) => getArtistSearchScore(b, query) - getArtistSearchScore(a, query));
+};
+
 const unwrapArtistList = (payload) => {
   if (Array.isArray(payload)) {
     return payload;
@@ -140,6 +263,25 @@ const hydrateSavedSpotifyArtists = async (artists) => {
   }
 };
 
+const mergeSavedSpotifyArtist = (savedArtist, sourceArtist) => {
+  if (!savedArtist?.id) {
+    return sourceArtist;
+  }
+
+  const sourceGenres = getArtistGenres(sourceArtist);
+  const savedGenres = getArtistGenres(savedArtist);
+
+  return {
+    ...savedArtist,
+    externalId: sourceArtist?.externalId || sourceArtist?.id || savedArtist.externalId || '',
+    imageUrl: sourceArtist?.imageUrl || savedArtist.imageUrl || '',
+    genres: sourceGenres.length > 0 ? sourceGenres : savedGenres,
+    source: 'spotify',
+    spotifyUrl: sourceArtist?.spotifyUrl || savedArtist.spotifyUrl || '',
+    popularity: getArtistPopularity(sourceArtist) || getArtistPopularity(savedArtist) || undefined,
+  };
+};
+
 export async function searchArtists(query, options = {}) {
   const normalizedQuery = normalizeText(query);
 
@@ -153,14 +295,17 @@ export async function searchArtists(query, options = {}) {
 
   if (isSupabaseConfigured()) {
     try {
-      const artists = await fetchSupabaseArtists(normalizedQuery);
+      const [artists, spotifyArtists] = await Promise.all([
+        fetchSupabaseArtists(normalizedQuery),
+        normalizedQuery ? searchSpotifyArtists(normalizedQuery) : Promise.resolve([]),
+      ]);
 
       if (!normalizedQuery) {
         return options.includeAllWhenEmpty ? artists : [];
       }
 
-      const spotifyArtists = await hydrateSavedSpotifyArtists(await searchSpotifyArtists(normalizedQuery));
-      return getUniqueArtists([...artists, ...spotifyArtists]);
+      const hydratedSpotifyArtists = await hydrateSavedSpotifyArtists(spotifyArtists);
+      return mergeArtistSearchResults(normalizedQuery, hydratedSpotifyArtists, artists);
     } catch (error) {
       console.error('Failed to search Supabase artists.', error);
       const fallbackArtists = searchFallbackArtists(query, options);
@@ -168,7 +313,7 @@ export async function searchArtists(query, options = {}) {
         ? await hydrateSavedSpotifyArtists(await searchSpotifyArtists(normalizedQuery))
         : [];
 
-      return getUniqueArtists([...fallbackArtists, ...spotifyArtists]);
+      return mergeArtistSearchResults(normalizedQuery, spotifyArtists, fallbackArtists);
     }
   }
 
@@ -284,7 +429,7 @@ export async function ensureArtistSaved(artist) {
     }
 
     if (existingArtist?.id) {
-      return mapArtistFromSupabase(existingArtist);
+      return mergeSavedSpotifyArtist(mapArtistFromSupabase(existingArtist), artist);
     }
 
     const { data, error } = await supabase
@@ -308,13 +453,13 @@ export async function ensureArtistSaved(artist) {
         .maybeSingle();
 
       if (!retryError && retryArtist?.id) {
-        return mapArtistFromSupabase(retryArtist);
+        return mergeSavedSpotifyArtist(mapArtistFromSupabase(retryArtist), artist);
       }
 
       throw error;
     }
 
-    return data?.id ? mapArtistFromSupabase(data) : artist;
+    return data?.id ? mergeSavedSpotifyArtist(mapArtistFromSupabase(data), artist) : artist;
   } catch (error) {
     console.error('Failed to save Spotify artist to Supabase.', error);
     return artist;

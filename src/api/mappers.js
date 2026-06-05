@@ -10,10 +10,22 @@ const getFirstImageUrl = (value) => {
   }
 
   if (Array.isArray(value)) {
-    return value.find((image) => typeof image?.url === 'string')?.url || '';
+    return value.find((image) => typeof image?.url === 'string' && image.url)?.url || '';
   }
 
   return '';
+};
+
+const SPOTIFY_REFRESH_FALLBACK_TEXT = 'Spotify 연결이 안정되면';
+
+const getSpotifyAlbumDescription = (album, artistName) => {
+  const description = album?.description || '';
+
+  if (typeof description === 'string' && description.includes(SPOTIFY_REFRESH_FALLBACK_TEXT)) {
+    return `${artistName || '아티스트'}의 새 음악이 Spotify에 공개됐어요.`;
+  }
+
+  return description || `${artistName || '아티스트'}의 새 음악이 Spotify에 공개됐어요.`;
 };
 
 export const mapArtistFromSupabase = (artist) => ({
@@ -101,6 +113,7 @@ export const mapSpotifyArtist = (artist) => {
     genres: Array.isArray(artist?.genres) ? artist.genres : [],
     source: 'spotify',
     spotifyUrl: artist?.spotifyUrl || artist?.spotify_url || artist?.external_urls?.spotify || '',
+    popularity: Number.isFinite(Number(artist?.popularity)) ? Number(artist.popularity) : undefined,
   };
 };
 
@@ -111,6 +124,7 @@ export const mapSpotifyAlbumToNews = (album, options = {}) => {
   const date = normalizeSpotifyReleaseDate(album?.date || album?.releaseDate || album?.release_date);
   const albumTitle = album?.title || album?.name || '새 앨범';
   const sourceUrl = album?.sourceUrl || album?.source_url || album?.spotifyUrl || album?.external_urls?.spotify || '';
+  const imageUrl = album?.imageUrl || album?.image_url || getFirstImageUrl(album?.images);
 
   return {
     id: album?.id?.startsWith?.('spotify_album_') ? album.id : `spotify_album_${albumId || albumTitle}`,
@@ -118,8 +132,9 @@ export const mapSpotifyAlbumToNews = (album, options = {}) => {
     artistName,
     type: 'album',
     title: albumTitle,
-    description: album?.description || `${artistName || '아티스트'}의 새 음악이 Spotify에 공개됐어요.`,
-    imageUrl: album?.imageUrl || album?.image_url || getFirstImageUrl(album?.images),
+    description: getSpotifyAlbumDescription(album, artistName),
+    imageUrl,
+    image_url: imageUrl,
     date,
     startTime: album?.startTime || album?.start_time || '',
     location: album?.location || 'Spotify',

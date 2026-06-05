@@ -64,6 +64,7 @@ export default function DetailPage() {
 
   const safeCalendarEvents = getSafeCalendarEvents(calendarEvents);
   const isAddedToCalendar = news ? hasCalendarEvent(safeCalendarEvents, news.id) : false;
+  const detailImageUrl = news?.imageUrl || news?.image_url || '';
   const sourceLinkText = news?.location === 'Spotify' || news?.sourceUrl?.includes('spotify.com')
     ? 'Spotify에서 보기'
     : '원문 보기';
@@ -156,10 +157,10 @@ export default function DetailPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
       >
-        {news.imageUrl && !hasImageError ? (
+        {detailImageUrl && !hasImageError ? (
           <img
             className="detail-image"
-            src={news.imageUrl}
+            src={detailImageUrl}
             alt={`${news.title} 이미지`}
             onError={() => setHasImageError(true)}
           />

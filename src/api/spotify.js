@@ -13,6 +13,7 @@ const SPOTIFY_NEWS_CACHE_KEY = 'goyoSpotifyNewsCache';
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const normalizeArtistId = (value) => (typeof value === 'string' ? value.trim() : '');
+const SPOTIFY_REFRESH_FALLBACK_TEXT = 'Spotify 연결이 안정되면';
 
 const readStorageArray = (key) => {
   if (typeof window === 'undefined') {
@@ -143,6 +144,38 @@ const readCachedSpotifyNews = () => {
     .filter((news) => news?.id);
 };
 
+const hasNewsImage = (news) => Boolean(news?.imageUrl || news?.image_url);
+
+const isSpotifyFallbackNews = (news) => {
+  return (
+    String(news?.id || '').startsWith('spotify_album_') &&
+    typeof news?.description === 'string' &&
+    news.description.includes(SPOTIFY_REFRESH_FALLBACK_TEXT)
+  );
+};
+
+const mergeSpotifyNewsItem = (baseNews, nextNews) => {
+  if (!baseNews) {
+    return nextNews;
+  }
+
+  if (!nextNews) {
+    return baseNews;
+  }
+
+  const baseImageUrl = baseNews.imageUrl || baseNews.image_url || '';
+  const nextImageUrl = nextNews.imageUrl || nextNews.image_url || '';
+  const shouldKeepBaseDescription = isSpotifyFallbackNews(nextNews) && !isSpotifyFallbackNews(baseNews);
+
+  return {
+    ...baseNews,
+    ...nextNews,
+    description: shouldKeepBaseDescription ? baseNews.description : nextNews.description,
+    imageUrl: nextImageUrl || baseImageUrl,
+    image_url: nextImageUrl || baseImageUrl,
+  };
+};
+
 const writeCachedSpotifyNews = (newsItems) => {
   if (typeof window === 'undefined') {
     return;
@@ -150,9 +183,9 @@ const writeCachedSpotifyNews = (newsItems) => {
 
   const newsById = new Map();
 
-  [...readCachedSpotifyNews(), ...newsItems].forEach((news) => {
+  [...readCachedSpotifyNews(), ...newsItems.map(mapSpotifyAlbumToNews)].forEach((news) => {
     if (news?.id) {
-      newsById.set(news.id, news);
+      newsById.set(news.id, mergeSpotifyNewsItem(newsById.get(news.id), news));
     }
   });
 
@@ -227,13 +260,14 @@ export async function searchSpotifyArtists(query) {
 export async function getSpotifyArtistAlbums(artistId) {
   const spotifyArtistId = normalizeArtistId(artistId);
   const client = getSupabaseClient();
+  const cachedNews = readCachedSpotifyNewsByArtistId(spotifyArtistId);
 
   if (!client || !spotifyArtistId) {
     return [];
   }
 
   if (isBrowserOffline()) {
-    return readCachedSpotifyNewsByArtistId(spotifyArtistId);
+    return cachedNews;
   }
 
   try {
@@ -244,19 +278,21 @@ export async function getSpotifyArtistAlbums(artistId) {
 
     if (functionError) {
       warnSpotifyFallback('Spotify artist albums', functionError);
-      return readCachedSpotifyNewsByArtistId(spotifyArtistId);
+      return cachedNews;
     }
 
-    if (/rate limited/i.test(data?.message || '')) {
+    const rawAlbums = unwrapList(data, 'news');
+
+    if (/rate limited/i.test(data?.message || '') && rawAlbums.length === 0) {
       warnSpotifyFallback('Spotify artist albums', {
         message: data.message,
         status: 429,
         stage: 'albums',
       });
-      return readCachedSpotifyNewsByArtistId(spotifyArtistId);
+      return cachedNews;
     }
 
-    const newsItems = unwrapList(data, 'news')
+    const newsItems = rawAlbums
       .map((album) =>
         mapSpotifyAlbumToNews(album, {
           artistId: spotifyArtistId,
@@ -269,10 +305,20 @@ export async function getSpotifyArtistAlbums(artistId) {
       writeCachedSpotifyNews(newsItems);
     }
 
-    return newsItems;
+    if (import.meta.env?.DEV) {
+      console.log('[GOYO spotify] artist albums', {
+        artistId: spotifyArtistId,
+        message: data?.message || '',
+        albumNewsCount: newsItems.length,
+        albumNewsWithImages: newsItems.filter(hasNewsImage).length,
+        cachedNewsCount: cachedNews.length,
+      });
+    }
+
+    return newsItems.length > 0 ? newsItems : cachedNews;
   } catch (error) {
     warnSpotifyFallback('Spotify artist albums', error);
-    return readCachedSpotifyNewsByArtistId(spotifyArtistId);
+    return cachedNews;
   }
 }
 

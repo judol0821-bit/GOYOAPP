@@ -2,11 +2,23 @@ export const HOME_NEWS_CACHE_KEY = 'cachedNewsItems';
 export const PREVIEW_NEWS_CACHE_KEY = 'cachedPreviewNews';
 
 const NEWS_CACHE_LIMIT = 180;
+const SPOTIFY_REFRESH_FALLBACK_TEXT = 'Spotify 연결이 안정되면';
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 
+const getCachedDescription = (news, artistName) => {
+  const description = normalizeText(news?.description);
+
+  if (description.includes(SPOTIFY_REFRESH_FALLBACK_TEXT)) {
+    return `${artistName || '아티스트'}의 새 음악이 Spotify에 공개됐어요.`;
+  }
+
+  return description;
+};
+
 export const normalizeCachedNewsItem = (news) => {
   const id = normalizeText(news?.id);
+  const artistName = normalizeText(news?.artistName || news?.artist_name);
 
   if (!id) {
     return null;
@@ -15,11 +27,12 @@ export const normalizeCachedNewsItem = (news) => {
   return {
     id,
     artistId: normalizeText(news?.artistId || news?.artist_id),
-    artistName: normalizeText(news?.artistName || news?.artist_name),
+    artistName,
     type: normalizeText(news?.type) || 'concert',
     title: normalizeText(news?.title) || '제목 없는 소식',
-    description: normalizeText(news?.description),
+    description: getCachedDescription(news, artistName),
     imageUrl: normalizeText(news?.imageUrl || news?.image_url),
+    image_url: normalizeText(news?.imageUrl || news?.image_url),
     date: normalizeText(news?.date),
     startTime: normalizeText(news?.startTime || news?.start_time),
     location: normalizeText(news?.location),
@@ -60,6 +73,7 @@ export const readAllCachedNewsItems = () => {
   return getSafeCachedNewsItems([
     ...readCachedNewsItems(HOME_NEWS_CACHE_KEY),
     ...readCachedNewsItems(PREVIEW_NEWS_CACHE_KEY),
+    ...readCalendarEventNewsItems(),
   ]);
 };
 
@@ -72,6 +86,61 @@ export const writeCachedNewsItems = (key, newsItems) => {
     key,
     JSON.stringify(getSafeCachedNewsItems(newsItems).slice(0, NEWS_CACHE_LIMIT)),
   );
+};
+
+export const mergeCachedNewsItems = (key, newsItems) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  writeCachedNewsItems(key, [...readCachedNewsItems(key), ...(Array.isArray(newsItems) ? newsItems : [])]);
+};
+
+const readCalendarEvents = () => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const events = JSON.parse(window.localStorage.getItem('calendarEvents') || '[]');
+    return Array.isArray(events) ? events : [];
+  } catch {
+    return [];
+  }
+};
+
+const readCalendarEventNewsItems = () => {
+  return readCalendarEvents()
+    .flatMap((event) => {
+      const snapshot = event?.newsItem || event?.newsSnapshot;
+
+      if (snapshot) {
+        return [snapshot];
+      }
+
+      if (!event?.newsId) {
+        return [];
+      }
+
+      return [
+        {
+          id: event.newsId,
+          artistId: '',
+          artistName: event.artistName || '',
+          type: event.type || 'concert',
+          title: event.title || '',
+          description: '',
+          imageUrl: '',
+          date: event.date || '',
+          startTime: event.time || '',
+          location: event.location || '',
+          sourceUrl: '',
+          createdAt: `${event.date || ''}T00:00:00.000Z`,
+        },
+      ];
+    })
+    .map(normalizeCachedNewsItem)
+    .filter(Boolean);
 };
 
 export const filterCachedNewsByArtistIds = (newsItems, artistIds) => {
