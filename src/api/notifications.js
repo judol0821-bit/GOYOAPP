@@ -1,11 +1,46 @@
 import { isSupabaseConfigured } from '../lib/supabase.js';
+import { mapSpotifyAlbumToNews } from './mappers.js';
 import { isBrowserOffline } from '../utils/network.js';
+import { readAllCachedNewsItems } from '../utils/newsCache.js';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 const CHECK_NEW_MUSIC_FUNCTION_NAME = 'check-new-music-notifications';
+const MAX_NOTIFICATION_TEST_ARTISTS = 2;
+const SPOTIFY_NEWS_CACHE_KEY = 'goyoSpotifyNewsCache';
+const SPOTIFY_NOTIFICATION_COOLDOWN_KEY = 'goyoSpotifyNotificationCooldownUntil';
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const readRateLimitCooldown = () => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const cooldownUntil = Number(window.localStorage.getItem(SPOTIFY_NOTIFICATION_COOLDOWN_KEY) || 0);
+
+  if (!Number.isFinite(cooldownUntil) || cooldownUntil <= Date.now()) {
+    return null;
+  }
+
+  return {
+    cooldownUntil,
+    retryAfter: Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1000)),
+  };
+};
+
+const writeRateLimitCooldown = (retryAfter) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const seconds = Number(retryAfter || 60);
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 60;
+  window.localStorage.setItem(
+    SPOTIFY_NOTIFICATION_COOLDOWN_KEY,
+    String(Date.now() + safeSeconds * 1000),
+  );
+};
 
 const toPushArtistPayload = (artist) => ({
   id: normalizeText(artist?.id),
@@ -13,6 +48,88 @@ const toPushArtistPayload = (artist) => ({
   name: normalizeText(artist?.name),
   source: artist?.source || 'spotify',
 });
+
+const readStorageArray = (key) => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  return [window.localStorage, window.sessionStorage].flatMap((storage) => {
+    try {
+      const value = JSON.parse(storage.getItem(key) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  });
+};
+
+const getArtistIdCandidates = (artist) => [
+  normalizeText(artist?.id),
+  normalizeText(artist?.externalId),
+].filter(Boolean);
+
+const getCachedNotificationAlbumNews = (artists) => {
+  const safeArtists = Array.isArray(artists) ? artists.map(toPushArtistPayload) : [];
+  const artistIds = new Set(safeArtists.flatMap(getArtistIdCandidates));
+  const artistNameById = new Map();
+  const externalIdByFrontendId = new Map();
+
+  safeArtists.forEach((artist) => {
+    if (artist.id && artist.name) {
+      artistNameById.set(artist.id, artist.name);
+    }
+
+    if (artist.externalId && artist.name) {
+      artistNameById.set(artist.externalId, artist.name);
+    }
+
+    if (artist.id && artist.externalId) {
+      externalIdByFrontendId.set(artist.id, artist.externalId);
+    }
+  });
+
+  const cachedItems = [
+    ...readAllCachedNewsItems(),
+    ...readStorageArray(SPOTIFY_NEWS_CACHE_KEY).map((item) => mapSpotifyAlbumToNews(item)).filter((item) => item?.id),
+  ];
+  const seenIds = new Set();
+
+  return cachedItems
+    .filter((news) => news?.type === 'album' && String(news?.id || '').startsWith('spotify_album_'))
+    .map((news) => {
+      const artistId = normalizeText(news.artistId || news.artist_id);
+      const resolvedSpotifyArtistId = externalIdByFrontendId.get(artistId) || artistId;
+
+      return {
+        ...news,
+        artistId: resolvedSpotifyArtistId,
+        spotifyArtistId: resolvedSpotifyArtistId,
+        externalArtistId: resolvedSpotifyArtistId,
+        frontendArtistId: artistId,
+        artistName: news.artistName || artistNameById.get(artistId) || artistNameById.get(resolvedSpotifyArtistId) || '',
+      };
+    })
+    .filter((news) => {
+      const ids = [
+        news.artistId,
+        news.spotifyArtistId,
+        news.externalArtistId,
+        news.frontendArtistId,
+      ].map(normalizeText);
+
+      return ids.some((id) => artistIds.has(id));
+    })
+    .filter((news) => {
+      if (!news.id || seenIds.has(news.id)) {
+        return false;
+      }
+
+      seenIds.add(news.id);
+      return true;
+    })
+    .slice(0, 12);
+};
 
 const parseFunctionPayload = async (response) => {
   const text = await response.text();
@@ -50,6 +167,12 @@ const getFunctionErrorMessage = (payload, status) => {
     return 'Spotify ID가 있는 아티스트가 없습니다.';
   }
 
+  if (errorCode === 'spotify_rate_limited') {
+    return payload?.retryAfter
+      ? `Spotify 요청이 많아 잠시 후 다시 시도해주세요. (${payload.retryAfter}초 뒤)`
+      : 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.';
+  }
+
   if (errorCode === 'web_push_failed') {
     return `Web Push 발송 실패: ${rawMessage || payload?.statusCode || status}`;
   }
@@ -83,26 +206,59 @@ const getDebugSummary = (debug) => {
     }
   })();
   const artistCount = debug.resolvedSpotifyArtistCount ?? debug.spotifyArtistCount ?? 0;
+  const checkedArtistCount = debug.checkedSpotifyArtistCount ?? artistCount;
   const successfulAlbumArtistCount = debug.successfulAlbumArtistCount ?? 0;
   const failedAlbumArtistCount = debug.failedAlbumArtistCount ?? 0;
   const albumCount = debug.albumNewsCount ?? 0;
   const candidateCount = debug.candidateCount ?? 0;
+  const cacheText = debug.usedCachedAlbumNews ? `, 캐시 ${debug.cachedAlbumCandidateCount ?? 0}개 사용` : '';
+  const retryText = debug.retryAfter ? `, ${debug.retryAfter}초 뒤 재시도` : '';
   const firstFailure = debug.firstAlbumFailureReason
     ? `, 첫 실패 ${debug.firstAlbumFailureReason}${debug.firstAlbumFailureStatus ? ` (${debug.firstAlbumFailureStatus})` : ''}${compactBody ? `, body ${compactBody}` : ''}`
     : '';
 
-  return `전체 ${debug.inputArtistCount ?? 0}명, Spotify ID ${artistCount}명, 조회 성공 ${successfulAlbumArtistCount}명, 조회 실패 ${failedAlbumArtistCount}명, 앨범 ${albumCount}개, 후보 ${candidateCount}개${firstFailure}`;
+  return `전체 ${debug.requestedArtistCount ?? debug.inputArtistCount ?? 0}명, 조회 대상 ${debug.inputArtistCount ?? 0}명, Spotify ID ${artistCount}명, 실제 조회 ${checkedArtistCount}명, 조회 성공 ${successfulAlbumArtistCount}명, 조회 실패 ${failedAlbumArtistCount}명, 앨범 ${albumCount}개, 후보 ${candidateCount}개${cacheText}${retryText}${firstFailure}`;
 };
 
 export async function checkNewMusicNotifications(anonymousUserId, artists, options = {}) {
   const safeAnonymousUserId = normalizeText(anonymousUserId);
-  const requestedArtists = Array.isArray(artists) ? artists.map(toPushArtistPayload) : [];
+  const allRequestedArtists = Array.isArray(artists) ? artists.map(toPushArtistPayload) : [];
+  const requestedArtists = allRequestedArtists
+    .filter((artist) => artist.externalId || artist.id)
+    .slice(0, MAX_NOTIFICATION_TEST_ARTISTS);
   const artistsWithExternalId = requestedArtists.filter((artist) => artist.externalId);
+  const cachedNewsItems = getCachedNotificationAlbumNews(allRequestedArtists);
+  const rateLimitCooldown = readRateLimitCooldown();
+
+  if (rateLimitCooldown && cachedNewsItems.length === 0) {
+    return {
+      ok: true,
+      sent: false,
+      reason: 'spotify_rate_limited',
+      message: 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.',
+      retryAfter: rateLimitCooldown.retryAfter,
+      debug: {
+        requestedArtistCount: allRequestedArtists.length,
+        inputArtistCount: requestedArtists.length,
+        inputArtistsWithRawSpotifyIdCount: artistsWithExternalId.length,
+        resolvedSpotifyArtistCount: requestedArtists.length,
+        checkedSpotifyArtistCount: 0,
+        successfulAlbumArtistCount: 0,
+        failedAlbumArtistCount: 0,
+        albumNewsCount: 0,
+        candidateCount: 0,
+        retryAfter: rateLimitCooldown.retryAfter,
+        cachedNewsItemCount: cachedNewsItems.length,
+      },
+    };
+  }
 
   if (import.meta.env?.DEV) {
     console.log('[GOYO push test] artists payload', {
+      totalArtistCount: allRequestedArtists.length,
       requestedArtistCount: requestedArtists.length,
       spotifyExternalIdArtistCount: artistsWithExternalId.length,
+      cachedNewsItemCount: cachedNewsItems.length,
       artists: requestedArtists,
     });
   }
@@ -141,10 +297,15 @@ export async function checkNewMusicNotifications(anonymousUserId, artists, optio
       body: JSON.stringify({
         anonymousUserId: safeAnonymousUserId,
         artists: requestedArtists,
+        cachedNewsItems,
         testMode: Boolean(options.testMode),
       }),
     });
     const payload = await parseFunctionPayload(response);
+
+    if (payload?.reason === 'spotify_rate_limited' || payload?.error === 'spotify_rate_limited') {
+      writeRateLimitCooldown(payload.retryAfter || payload?.debug?.retryAfter || 60);
+    }
 
     if (import.meta.env?.DEV) {
       console.log('[GOYO push test] function response', {

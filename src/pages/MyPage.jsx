@@ -707,19 +707,26 @@ export default function MyPage() {
     })();
     const inputArtistCount = debug.inputArtistCount ?? 0;
     const spotifyArtistCount = debug.resolvedSpotifyArtistCount ?? debug.spotifyArtistCount ?? 0;
+    const checkedSpotifyArtistCount = debug.checkedSpotifyArtistCount ?? spotifyArtistCount;
     const successfulAlbumArtistCount = debug.successfulAlbumArtistCount ?? 0;
     const failedAlbumArtistCount = debug.failedAlbumArtistCount ?? 0;
     const albumNewsCount = debug.albumNewsCount ?? 0;
     const candidateCount = debug.candidateCount ?? 0;
     const firstAlbumFailureReason = debug.firstAlbumFailureReason || '';
+    const cacheText = debug.usedCachedAlbumNews ? ` · 캐시 ${debug.cachedAlbumCandidateCount ?? 0}개 사용` : '';
+    const retryText = debug.retryAfter ? ` · ${debug.retryAfter}초 뒤 재시도` : '';
     const failureText = firstAlbumFailureReason
       ? ` · 첫 실패 ${firstAlbumFailureReason}${debug.firstAlbumFailureStatus ? ` (${debug.firstAlbumFailureStatus})` : ''}${compactFailureBody ? ` · body ${compactFailureBody}` : ''}`
       : '';
 
-    return `전체 ${inputArtistCount}명 · Spotify ID ${spotifyArtistCount}명 · 조회 성공 ${successfulAlbumArtistCount}명 · 조회 실패 ${failedAlbumArtistCount}명 · 앨범 ${albumNewsCount}개 · 후보 ${candidateCount}개${failureText}`;
+    return `전체 ${debug.requestedArtistCount ?? inputArtistCount}명 · 조회 대상 ${inputArtistCount}명 · Spotify ID ${spotifyArtistCount}명 · 실제 조회 ${checkedSpotifyArtistCount}명 · 조회 성공 ${successfulAlbumArtistCount}명 · 조회 실패 ${failedAlbumArtistCount}명 · 앨범 ${albumNewsCount}개 · 후보 ${candidateCount}개${cacheText}${retryText}${failureText}`;
   };
 
   const handleNewMusicNotificationTest = async () => {
+    if (newMusicTestState.isLoading) {
+      return;
+    }
+
     if (followedArtists.length === 0) {
       setNewMusicTestState({
         isLoading: false,
@@ -766,6 +773,10 @@ export default function MyPage() {
       const message =
         result.reason === 'already_notified'
           ? '이미 알림을 보낸 새 음악이에요. 중복 발송하지 않았어요.'
+          : result.reason === 'spotify_rate_limited'
+            ? result.retryAfter
+              ? `Spotify 요청이 많아 잠시 후 다시 시도해주세요. (${result.retryAfter}초 뒤)`
+              : 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.'
           : result.reason === 'no_recent_music'
             ? '앨범을 조회했지만 알림 후보가 없어요.'
             : '지금 새로 보낼 음악 알림이 없어요.';
@@ -809,6 +820,7 @@ export default function MyPage() {
     try {
       window.localStorage.removeItem('goyoSpotifyArtistCache');
       window.localStorage.removeItem('goyoSpotifyNewsCache');
+      window.localStorage.removeItem('goyoSpotifyNotificationCooldownUntil');
       window.sessionStorage.removeItem('processedPreviewNewsIds');
       Object.keys(window.sessionStorage)
         .filter((key) => key.startsWith('processedPreviewNewsIds:'))

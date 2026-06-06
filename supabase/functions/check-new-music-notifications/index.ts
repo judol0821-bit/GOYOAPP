@@ -22,6 +22,18 @@ type RequestArtist = {
   source?: string;
 };
 
+type RequestCachedNewsItem = Partial<MusicNewsItem> & {
+  artist_id?: string;
+  artist_name?: string;
+  image_url?: string;
+  source_url?: string;
+  start_time?: string;
+  created_at?: string;
+  spotifyArtistId?: string;
+  externalArtistId?: string;
+  frontendArtistId?: string;
+};
+
 type ResolvedSpotifyArtist = RequestArtist & {
   externalId: string;
   resolvedSpotifyArtistId: string;
@@ -64,6 +76,7 @@ type SpotifyAlbumFetchResult = {
   noMarketItemCount: number;
   retriedWithoutMarket: boolean;
   error: ReturnType<typeof getErrorDetails> | null;
+  retryAfter: string;
 };
 
 type SpotifyAlbumPageResult = {
@@ -72,7 +85,11 @@ type SpotifyAlbumPageResult = {
   url: string;
   payload: Record<string, unknown>;
   items: SpotifyAlbum[];
+  retryAfter: string;
 };
+
+const MAX_TEST_ARTISTS = 2;
+const MAX_CACHED_NEWS_ITEMS = 40;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -80,11 +97,12 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const jsonResponse = (body: Record<string, unknown>, status = 200) =>
+const jsonResponse = (body: Record<string, unknown>, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), {
     status,
     headers: {
       ...corsHeaders,
+      ...headers,
       'Content-Type': 'application/json',
     },
   });
@@ -213,6 +231,7 @@ const createSpotifyAlbumsError = ({
   payload,
   retryUrl = '',
   retryPayload = null,
+  retryAfter = '',
 }: {
   message: string;
   status: number | null;
@@ -222,6 +241,7 @@ const createSpotifyAlbumsError = ({
   payload: Record<string, unknown> | null;
   retryUrl?: string;
   retryPayload?: Record<string, unknown> | null;
+  retryAfter?: string;
 }) => ({
   name: 'SpotifyAlbumsError',
   message,
@@ -234,6 +254,7 @@ const createSpotifyAlbumsError = ({
     payload,
     retryUrl,
     retryPayload,
+    retryAfter,
   },
   stack: '',
 });
@@ -464,6 +485,7 @@ const fetchSpotifyAlbumPage = async (
   });
   const payload = await response.json().catch(() => ({}));
   const items = Array.isArray(payload?.items) ? payload.items : [];
+  const retryAfter = response.headers.get('Retry-After') || response.headers.get('retry-after') || '';
 
   return {
     ok: response.ok,
@@ -471,6 +493,7 @@ const fetchSpotifyAlbumPage = async (
     url: url.toString(),
     payload,
     items,
+    retryAfter,
   };
 };
 
@@ -486,6 +509,7 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
       marketItemCount: 0,
       noMarketItemCount: 0,
       retriedWithoutMarket: false,
+      retryAfter: '',
       error: {
         name: 'InvalidSpotifyArtistId',
         message: 'Resolved artist id is not a Spotify artist id.',
@@ -507,12 +531,35 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
     itemCount: marketResult.items.length,
     url: marketResult.url,
     errorBody: marketResult.ok ? null : marketResult.payload,
+    retryAfter: marketResult.retryAfter,
   });
 
   let finalItems = marketResult.ok ? marketResult.items : [];
   let noMarketItemCount = 0;
   let retriedWithoutMarket = false;
   let noMarketError: ReturnType<typeof getErrorDetails> | null = null;
+
+  if (marketResult.status === 429) {
+    return {
+      artist,
+      newsItems: [],
+      status: marketResult.status,
+      itemCount: 0,
+      marketItemCount: 0,
+      noMarketItemCount: 0,
+      retriedWithoutMarket: false,
+      retryAfter: marketResult.retryAfter,
+      error: createSpotifyAlbumsError({
+        message: 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.',
+        status: marketResult.status,
+        artistName,
+        artistId: spotifyArtistId,
+        url: marketResult.url,
+        payload: marketResult.payload,
+        retryAfter: marketResult.retryAfter,
+      }),
+    };
+  }
 
   if (!marketResult.ok || finalItems.length === 0) {
     retriedWithoutMarket = true;
@@ -528,6 +575,7 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
       url: noMarketResult.url,
       errorBody: noMarketResult.ok ? null : noMarketResult.payload,
       retriedBecause: marketResult.ok ? 'empty_market_result' : 'market_request_failed',
+      retryAfter: noMarketResult.retryAfter,
     });
 
     if (noMarketResult.ok) {
@@ -542,7 +590,32 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
         payload: marketResult.payload,
         retryUrl: noMarketResult.url,
         retryPayload: noMarketResult.payload,
+        retryAfter: noMarketResult.retryAfter,
       });
+    }
+
+    if (noMarketResult.status === 429) {
+      return {
+        artist,
+        newsItems: [],
+        status: noMarketResult.status,
+        itemCount: 0,
+        marketItemCount: marketResult.items.length,
+        noMarketItemCount,
+        retriedWithoutMarket,
+        retryAfter: noMarketResult.retryAfter,
+        error: createSpotifyAlbumsError({
+          message: 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.',
+          status: noMarketResult.status,
+          artistName,
+          artistId: spotifyArtistId,
+          url: marketResult.url,
+          payload: marketResult.payload,
+          retryUrl: noMarketResult.url,
+          retryPayload: noMarketResult.payload,
+          retryAfter: noMarketResult.retryAfter,
+        }),
+      };
     }
   }
 
@@ -560,6 +633,9 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
       retryPayload: noMarketError?.body && typeof noMarketError.body === 'object'
         ? ((noMarketError.body as Record<string, unknown>).retryPayload as Record<string, unknown> | null)
         : null,
+      retryAfter: noMarketError?.body && typeof noMarketError.body === 'object'
+        ? normalizeText((noMarketError.body as Record<string, unknown>).retryAfter)
+        : '',
     });
 
     return {
@@ -570,6 +646,9 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
       marketItemCount: 0,
       noMarketItemCount,
       retriedWithoutMarket,
+      retryAfter: error.body && typeof error.body === 'object'
+        ? normalizeText((error.body as Record<string, unknown>).retryAfter)
+        : '',
       error,
     };
   }
@@ -606,6 +685,7 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
     marketItemCount: marketResult.items.length,
     noMarketItemCount,
     retriedWithoutMarket,
+    retryAfter: '',
     error: newsItems.length > 0 ? null : noMarketError,
   };
 };
@@ -617,6 +697,10 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
   const directResult = await fetchSpotifyAlbums(accessToken, artist);
 
   if (directResult.newsItems.length > 0) {
+    return directResult;
+  }
+
+  if (directResult.error?.statusCode === 429) {
     return directResult;
   }
 
@@ -638,6 +722,7 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
       Authorization: `Bearer ${accessToken}`,
     },
   });
+  const retryAfter = response.headers.get('Retry-After') || response.headers.get('retry-after') || '';
   const payload = await response.json().catch(() => ({}));
   const items = Array.isArray(payload?.albums?.items) ? payload.albums.items : [];
   const filteredItems = items.filter((album: SpotifyAlbum) => {
@@ -656,6 +741,7 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
     url: searchUrl.toString(),
     errorBody: response.ok ? null : payload,
     fallbackReason: directResult.error?.message || 'empty_albums_result',
+    retryAfter,
   });
 
   if (!response.ok) {
@@ -708,6 +794,7 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
       marketItemCount: 0,
       noMarketItemCount: 0,
       retriedWithoutMarket: false,
+      retryAfter: '',
       error: null,
     };
   }
@@ -723,6 +810,7 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
             searchStatus: response.status,
             searchItemCount: items.length,
             filteredSearchItemCount: filteredItems.length,
+            retryAfter,
           },
         }
       : null,
@@ -779,6 +867,73 @@ const filterRecentMusic = (newsItems: MusicNewsItem[]) => {
   });
 };
 
+const normalizeCachedNewsItem = (news: RequestCachedNewsItem): MusicNewsItem | null => {
+  const id = normalizeText(news?.id);
+
+  if (!id || !id.startsWith('spotify_album_')) {
+    return null;
+  }
+
+  const artistId = normalizeText(
+    news.artistId || news.artist_id || news.spotifyArtistId || news.externalArtistId || news.frontendArtistId,
+  );
+  const artistName = normalizeText(news.artistName || news.artist_name);
+  const date = normalizeReleaseDate(news.date);
+  const imageUrl = normalizeText(news.imageUrl || news.image_url);
+
+  return {
+    id,
+    artistId,
+    artistName,
+    type: 'album',
+    title: normalizeText(news.title) || '새 음악',
+    description: normalizeText(news.description) || `${artistName || '아티스트'}의 새 음악이 Spotify에 공개됐어요.`,
+    imageUrl,
+    image_url: imageUrl,
+    date,
+    startTime: normalizeText(news.startTime || news.start_time),
+    location: normalizeText(news.location) || 'Spotify',
+    sourceUrl: normalizeText(news.sourceUrl || news.source_url),
+    createdAt: normalizeText(news.createdAt || news.created_at) || `${date}T00:00:00.000Z`,
+  };
+};
+
+const getCachedAlbumCandidates = (cachedNewsItems: RequestCachedNewsItem[], spotifyArtists: ResolvedSpotifyArtist[]) => {
+  const artistIds = new Set<string>();
+  const artistNames = new Set<string>();
+
+  spotifyArtists.forEach((artist) => {
+    [
+      artist.id,
+      artist.externalId,
+      artist.external_id,
+      artist.resolvedSpotifyArtistId,
+    ].forEach((value) => {
+      const normalizedValue = normalizeText(value);
+
+      if (normalizedValue) {
+        artistIds.add(normalizedValue);
+      }
+    });
+
+    const normalizedName = normalizeName(artist.name);
+
+    if (normalizedName) {
+      artistNames.add(normalizedName);
+    }
+  });
+
+  return dedupeNews(
+    cachedNewsItems
+      .slice(0, MAX_CACHED_NEWS_ITEMS)
+      .map(normalizeCachedNewsItem)
+      .filter((news): news is MusicNewsItem => Boolean(news))
+      .filter((news) => {
+        return artistIds.has(news.artistId) || artistNames.has(normalizeName(news.artistName));
+      }),
+  );
+};
+
 Deno.serve(async (request) => {
   try {
     if (request.method === 'OPTIONS') {
@@ -792,6 +947,7 @@ Deno.serve(async (request) => {
     let body: {
       anonymousUserId?: string;
       artists?: RequestArtist[];
+      cachedNewsItems?: RequestCachedNewsItem[];
       testMode?: boolean;
     };
 
@@ -809,22 +965,27 @@ Deno.serve(async (request) => {
     }
 
     const anonymousUserId = normalizeText(body.anonymousUserId);
-    const inputArtists = (Array.isArray(body.artists) ? body.artists : [])
+    const requestedArtists = (Array.isArray(body.artists) ? body.artists : [])
       .map((artist) => ({
         id: normalizeText(artist.id),
         externalId: normalizeText(artist.externalId),
         external_id: normalizeText(artist.external_id),
         name: normalizeText(artist.name),
         source: normalizeText(artist.source) || 'manual',
-      }))
-      .slice(0, 12);
+      }));
+    const inputArtists = requestedArtists.slice(0, MAX_TEST_ARTISTS);
+    const cachedNewsItems = Array.isArray(body.cachedNewsItems)
+      ? body.cachedNewsItems.slice(0, MAX_CACHED_NEWS_ITEMS)
+      : [];
     const isTestMode = body.testMode === true;
     const inputArtistsWithRawSpotifyIdCount = inputArtists.filter((artist) => getRawSpotifyArtistId(artist).id).length;
 
     logStep('request_validated', {
       hasAnonymousUserId: Boolean(anonymousUserId),
+      requestedArtistCount: requestedArtists.length,
       inputArtistCount: inputArtists.length,
       inputArtistsWithRawSpotifyIdCount,
+      cachedNewsItemCount: cachedNewsItems.length,
       testMode: isTestMode,
       artists: inputArtists.map((artist) => ({
         id: artist.id,
@@ -846,6 +1007,7 @@ Deno.serve(async (request) => {
         reason: 'no_spotify_artists',
         message: 'No artists were provided.',
         debug: {
+          requestedArtistCount: requestedArtists.length,
           inputArtistCount: inputArtists.length,
           inputArtistsWithRawSpotifyIdCount,
           resolvedSpotifyArtistCount: 0,
@@ -952,6 +1114,7 @@ Deno.serve(async (request) => {
 
     logStep('spotify_artists_resolved', {
       inputArtistCount: inputArtists.length,
+      requestedArtistCount: requestedArtists.length,
       inputArtistsWithRawSpotifyIdCount,
       resolvedSpotifyArtistCount: spotifyArtists.length,
       resolvedArtists: spotifyArtists.map((artist) => ({
@@ -983,6 +1146,7 @@ Deno.serve(async (request) => {
         message: 'No artists could be resolved to Spotify artist IDs.',
         debug: {
           inputArtistCount: inputArtists.length,
+          requestedArtistCount: requestedArtists.length,
           inputArtistsWithRawSpotifyIdCount,
           resolvedSpotifyArtistCount: 0,
           successfulAlbumArtistCount: 0,
@@ -1001,17 +1165,65 @@ Deno.serve(async (request) => {
       });
     }
 
-    const albumResults = await Promise.all(
-      spotifyArtists.map(async (artist) => {
+    const cachedAlbumCandidates = getCachedAlbumCandidates(cachedNewsItems, spotifyArtists);
+    let albumResults: SpotifyAlbumFetchResult[] = [];
+    let usedCachedAlbumNews = cachedAlbumCandidates.length > 0;
+    let rateLimitRetryAfter = '';
+
+    if (usedCachedAlbumNews) {
+      albumResults = [
+        {
+          artist: spotifyArtists[0],
+          newsItems: cachedAlbumCandidates,
+          status: 200,
+          itemCount: cachedAlbumCandidates.length,
+          marketItemCount: 0,
+          noMarketItemCount: 0,
+          retriedWithoutMarket: false,
+          retryAfter: '',
+          error: null,
+        },
+      ];
+
+      logStep('cached_album_candidates_used', {
+        cachedAlbumCandidateCount: cachedAlbumCandidates.length,
+        candidateSample: cachedAlbumCandidates.slice(0, 3).map((news) => ({
+          id: news.id,
+          artistId: news.artistId,
+          artistName: news.artistName,
+          title: news.title,
+          date: news.date,
+        })),
+      });
+    } else {
+      for (const artist of spotifyArtists.slice(0, MAX_TEST_ARTISTS)) {
         try {
-          return await fetchSpotifyAlbumsWithSearchFallback(accessToken, artist);
+          const result = await fetchSpotifyAlbumsWithSearchFallback(accessToken, artist);
+          albumResults.push(result);
+
+          if (result.error?.statusCode === 429) {
+            rateLimitRetryAfter = result.retryAfter || (
+              result.error.body && typeof result.error.body === 'object'
+                ? normalizeText((result.error.body as Record<string, unknown>).retryAfter)
+                : ''
+            );
+
+            logStep('spotify_rate_limited_stop_remaining_artists', {
+              artistName: artist.name,
+              artistId: artist.externalId,
+              retryAfter: rateLimitRetryAfter,
+              checkedArtistCount: albumResults.length,
+              skippedArtistCount: Math.max(spotifyArtists.length - albumResults.length, 0),
+            });
+            break;
+          }
         } catch (error) {
           logError('spotify_artist_albums_failed', error, {
             artistId: artist.externalId,
             artistName: artist.name,
           });
 
-          return {
+          albumResults.push({
             artist,
             newsItems: [],
             status: null,
@@ -1019,15 +1231,17 @@ Deno.serve(async (request) => {
             marketItemCount: 0,
             noMarketItemCount: 0,
             retriedWithoutMarket: false,
+            retryAfter: '',
             error: getErrorDetails(error),
-          };
+          });
         }
-      }),
-    );
+      }
+    }
     const albumNews = albumResults.flatMap((result) => result.newsItems);
     const successfulAlbumArtistCount = albumResults.filter((result) => !result.error).length;
     const failedAlbumArtistCount = albumResults.filter((result) => result.error).length;
     const firstAlbumFailure = albumResults.find((result) => result.error)?.error || null;
+    const isRateLimited = albumResults.some((result) => result.error?.statusCode === 429);
     const albumFailureDetails = albumResults
       .filter((result) => result.error)
       .map((result) => ({
@@ -1037,21 +1251,30 @@ Deno.serve(async (request) => {
         status: result.error?.statusCode || null,
         message: result.error?.message || '',
         body: result.error?.body || null,
+        retryAfter: result.retryAfter,
       }));
     const dedupedAlbumNews = sortNews(dedupeNews(albumNews));
     const recentCandidates = sortNews(filterRecentMusic(dedupedAlbumNews));
     const candidates = isTestMode && recentCandidates.length === 0 ? dedupedAlbumNews : recentCandidates;
     const debug = {
       testMode: isTestMode,
+      requestedArtistCount: requestedArtists.length,
       inputArtistCount: inputArtists.length,
       inputArtistsWithRawSpotifyIdCount,
       spotifyArtistCount: spotifyArtists.length,
       resolvedSpotifyArtistCount: spotifyArtists.length,
+      checkedSpotifyArtistCount: albumResults.length,
+      skippedSpotifyArtistCount: Math.max(spotifyArtists.length - albumResults.length, 0),
       successfulAlbumArtistCount,
       failedAlbumArtistCount,
       firstAlbumFailureReason: firstAlbumFailure?.message || '',
       firstAlbumFailureStatus: firstAlbumFailure?.statusCode || null,
       firstAlbumFailureBody: firstAlbumFailure?.body || null,
+      isRateLimited,
+      retryAfter: rateLimitRetryAfter,
+      cachedNewsItemCount: cachedNewsItems.length,
+      cachedAlbumCandidateCount: cachedAlbumCandidates.length,
+      usedCachedAlbumNews,
       albumNewsCount: albumNews.length,
       dedupedAlbumNewsCount: dedupedAlbumNews.length,
       recentCandidateCount: recentCandidates.length,
@@ -1069,9 +1292,9 @@ Deno.serve(async (request) => {
       })),
       albumCountByArtist: albumResults.map((result) => ({
         artistId: result.artist.externalId,
-        resolvedSpotifyArtistId: result.artist.resolvedSpotifyArtistId,
-        resolveMethod: result.artist.resolveMethod,
-        query: result.artist.query,
+        resolvedSpotifyArtistId: (result.artist as RequestArtist & { resolvedSpotifyArtistId?: string }).resolvedSpotifyArtistId,
+        resolveMethod: (result.artist as RequestArtist & { resolveMethod?: string }).resolveMethod,
+        query: (result.artist as RequestArtist & { query?: string }).query,
         artistName: result.artist.name,
         status: result.status,
         albumCount: result.newsItems.length,
@@ -1079,6 +1302,7 @@ Deno.serve(async (request) => {
         marketItemCount: result.marketItemCount,
         noMarketItemCount: result.noMarketItemCount,
         retriedWithoutMarket: result.retriedWithoutMarket,
+        retryAfter: result.retryAfter,
         error: result.error,
       })),
     };
@@ -1086,6 +1310,22 @@ Deno.serve(async (request) => {
     logStep('spotify_candidates_ready', {
       ...debug,
     });
+
+    if (isRateLimited && candidates.length === 0) {
+      return jsonResponse(
+        {
+          ok: true,
+          sent: false,
+          reason: 'spotify_rate_limited',
+          message: 'Spotify 요청이 많아 잠시 후 다시 시도해주세요.',
+          retryAfter: rateLimitRetryAfter,
+          checkedArtists: albumResults.length,
+          debug,
+        },
+        200,
+        rateLimitRetryAfter ? { 'Retry-After': rateLimitRetryAfter } : {},
+      );
+    }
 
     if (candidates.length === 0) {
       return jsonResponse({
