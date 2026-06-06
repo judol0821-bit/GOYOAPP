@@ -9,10 +9,12 @@
 // - SUPABASE_SERVICE_ROLE_KEY
 //
 // Deploy:
-// npx.cmd supabase functions deploy check-new-music-notifications --no-verify-jwt --project-ref skspszkqmkeekhnerfss
+// npx.cmd supabase functions deploy check-new-music-notifications --project-ref skspszkqmkeekhnerfss
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
+
+type SupabaseClientInstance = ReturnType<typeof createClient>;
 
 type RequestArtist = {
   id?: string;
@@ -77,6 +79,7 @@ type SpotifyAlbumFetchResult = {
   retriedWithoutMarket: boolean;
   error: ReturnType<typeof getErrorDetails> | null;
   retryAfter: string;
+  source?: 'spotify' | 'server_cache' | 'server_stale_cache' | 'client_cache';
 };
 
 type SpotifyAlbumPageResult = {
@@ -88,8 +91,33 @@ type SpotifyAlbumPageResult = {
   retryAfter: string;
 };
 
+type AlbumCacheRow = {
+  artist_id?: string;
+  album_id?: string;
+  album_name?: string;
+  release_date?: string;
+  image_url?: string;
+  cached_at?: string;
+};
+
+type ArtistAlbumCacheStatusRow = {
+  artist_id?: string;
+  album_count?: number;
+  checked_at?: string;
+};
+
+type SpotifyRateLimitState = {
+  isActive: boolean;
+  retryAfter: string;
+  retryAfterUntil: string;
+  lastStatus: number | null;
+  lastBody: unknown;
+};
+
 const MAX_TEST_ARTISTS = 2;
 const MAX_CACHED_NEWS_ITEMS = 40;
+const ALBUM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SPOTIFY_RATE_LIMIT_PROVIDER = 'spotify';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -178,6 +206,303 @@ const getFirstImageUrl = (images: SpotifyAlbum['images']) => {
   }
 
   return images.find((image) => image?.url)?.url || '';
+};
+
+const getCacheCutoffTime = () => Date.now() - ALBUM_CACHE_TTL_MS;
+
+const isCacheFresh = (cachedAt: unknown) => {
+  const cachedTime = Date.parse(normalizeText(cachedAt));
+
+  return Number.isFinite(cachedTime) && cachedTime >= getCacheCutoffTime();
+};
+
+const parseRetryAfterSeconds = (retryAfter: unknown) => {
+  const value = normalizeText(retryAfter);
+  const seconds = Number(value);
+
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.ceil(seconds);
+  }
+
+  const retryDateTime = Date.parse(value);
+
+  if (Number.isFinite(retryDateTime)) {
+    return Math.max(1, Math.ceil((retryDateTime - Date.now()) / 1000));
+  }
+
+  return 60;
+};
+
+const mapAlbumCacheRowsToNews = (artist: RequestArtist, rows: AlbumCacheRow[]) => {
+  const spotifyArtistId = getSpotifyArtistId(artist);
+  const artistName = normalizeText(artist.name) || '아티스트';
+
+  return rows
+    .map((row) => {
+      const albumId = normalizeText(row.album_id);
+      const date = normalizeReleaseDate(row.release_date);
+      const title = normalizeText(row.album_name) || '새 음악';
+      const imageUrl = normalizeText(row.image_url);
+
+      if (!albumId) {
+        return null;
+      }
+
+      return {
+        id: `spotify_album_${albumId}`,
+        artistId: spotifyArtistId,
+        artistName,
+        type: 'album' as const,
+        title,
+        description: `${artistName}의 새 음악이 Spotify에 공개됐어요.`,
+        imageUrl,
+        image_url: imageUrl,
+        date,
+        startTime: '',
+        location: 'Spotify',
+        sourceUrl: '',
+        createdAt: `${date}T00:00:00.000Z`,
+      };
+    })
+    .filter((news): news is MusicNewsItem => Boolean(news));
+};
+
+const getAlbumCacheResult = async (
+  supabase: SupabaseClientInstance,
+  artist: RequestArtist,
+  { allowStale = false }: { allowStale?: boolean } = {},
+): Promise<SpotifyAlbumFetchResult | null> => {
+  const spotifyArtistId = getSpotifyArtistId(artist);
+
+  if (!spotifyArtistId || !isLikelySpotifyArtistId(spotifyArtistId)) {
+    return null;
+  }
+
+  let cacheStatus: ArtistAlbumCacheStatusRow | null = null;
+  const { data: statusData, error: statusError } = await supabase
+    .from('artist_album_cache_status')
+    .select('artist_id, album_count, checked_at')
+    .eq('artist_id', spotifyArtistId)
+    .maybeSingle();
+
+  if (statusError) {
+    logError('artist_album_cache_status_query_failed', statusError, {
+      artistId: spotifyArtistId,
+      artistName: artist.name,
+    });
+  } else {
+    cacheStatus = statusData as ArtistAlbumCacheStatusRow | null;
+  }
+
+  const { data, error } = await supabase
+    .from('album_cache')
+    .select('artist_id, album_id, album_name, release_date, image_url, cached_at')
+    .eq('artist_id', spotifyArtistId)
+    .order('cached_at', { ascending: false })
+    .order('release_date', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    logError('album_cache_query_failed', error, {
+      artistId: spotifyArtistId,
+      artistName: artist.name,
+    });
+    return null;
+  }
+
+  const rows = Array.isArray(data) ? data as AlbumCacheRow[] : [];
+  const freshRows = rows.filter((row) => isCacheFresh(row.cached_at));
+  const statusIsFresh = isCacheFresh(cacheStatus?.checked_at);
+  const statusIsUsable = statusIsFresh || (allowStale && Boolean(cacheStatus?.checked_at));
+  const usableRows = freshRows.length > 0 ? freshRows : allowStale ? rows : [];
+
+  if (usableRows.length === 0 && !statusIsUsable) {
+    return null;
+  }
+
+  const newsItems = mapAlbumCacheRowsToNews(artist, usableRows);
+
+  if (newsItems.length === 0 && !statusIsUsable) {
+    return null;
+  }
+
+  const usedStaleCache = freshRows.length === 0 && !statusIsFresh;
+
+  logStep('album_cache_used', {
+    artistId: spotifyArtistId,
+    artistName: artist.name,
+    cachedAlbumCount: newsItems.length,
+    usedStaleCache,
+    newestCachedAt: rows[0]?.cached_at || '',
+    statusCheckedAt: cacheStatus?.checked_at || '',
+    statusAlbumCount: cacheStatus?.album_count ?? null,
+  });
+
+  return {
+    artist,
+    newsItems,
+    status: 200,
+    itemCount: newsItems.length,
+    marketItemCount: 0,
+    noMarketItemCount: 0,
+    retriedWithoutMarket: false,
+    retryAfter: '',
+    error: null,
+    source: usedStaleCache ? 'server_stale_cache' : 'server_cache',
+  };
+};
+
+const saveAlbumCache = async (
+  supabase: SupabaseClientInstance,
+  artist: RequestArtist,
+  newsItems: MusicNewsItem[],
+) => {
+  const spotifyArtistId = getSpotifyArtistId(artist);
+
+  if (!spotifyArtistId) {
+    return false;
+  }
+
+  const now = new Date().toISOString();
+  const rows = newsItems
+    .map((newsItem) => {
+      const albumId = normalizeText(newsItem.id).replace(/^spotify_album_/, '');
+
+      if (!albumId) {
+        return null;
+      }
+
+      return {
+        artist_id: spotifyArtistId,
+        album_id: albumId,
+        album_name: normalizeText(newsItem.title),
+        release_date: normalizeReleaseDate(newsItem.date),
+        image_url: normalizeText(newsItem.imageUrl || newsItem.image_url),
+        cached_at: now,
+      };
+    })
+    .filter(Boolean);
+
+  const { error: statusError } = await supabase
+    .from('artist_album_cache_status')
+    .upsert(
+      {
+        artist_id: spotifyArtistId,
+        album_count: rows.length,
+        checked_at: now,
+      },
+      { onConflict: 'artist_id' },
+    );
+
+  if (statusError) {
+    logError('artist_album_cache_status_upsert_failed', statusError, {
+      artistId: spotifyArtistId,
+      artistName: artist.name,
+      albumCount: rows.length,
+    });
+  }
+
+  if (rows.length === 0) {
+    logStep('album_cache_status_saved_without_albums', {
+      artistId: spotifyArtistId,
+      artistName: artist.name,
+    });
+    return false;
+  }
+
+  const { error } = await supabase
+    .from('album_cache')
+    .upsert(rows, { onConflict: 'artist_id,album_id' });
+
+  if (error) {
+    logError('album_cache_upsert_failed', error, {
+      artistId: spotifyArtistId,
+      artistName: artist.name,
+      cacheRowCount: rows.length,
+    });
+    return false;
+  }
+
+  logStep('album_cache_saved', {
+    artistId: spotifyArtistId,
+    artistName: artist.name,
+    cacheRowCount: rows.length,
+  });
+
+  return true;
+};
+
+const getActiveSpotifyRateLimit = async (supabase: SupabaseClientInstance): Promise<SpotifyRateLimitState> => {
+  const { data, error } = await supabase
+    .from('spotify_rate_limits')
+    .select('provider, retry_after_seconds, retry_after_until, last_status, last_body, updated_at')
+    .eq('provider', SPOTIFY_RATE_LIMIT_PROVIDER)
+    .maybeSingle();
+
+  if (error) {
+    logError('spotify_rate_limit_query_failed', error);
+    return {
+      isActive: false,
+      retryAfter: '',
+      retryAfterUntil: '',
+      lastStatus: null,
+      lastBody: null,
+    };
+  }
+
+  const retryAfterUntil = normalizeText(data?.retry_after_until);
+  const retryAfterUntilTime = Date.parse(retryAfterUntil);
+  const remainingSeconds = Number.isFinite(retryAfterUntilTime)
+    ? Math.max(0, Math.ceil((retryAfterUntilTime - Date.now()) / 1000))
+    : 0;
+
+  return {
+    isActive: remainingSeconds > 0,
+    retryAfter: remainingSeconds > 0 ? String(remainingSeconds) : '',
+    retryAfterUntil,
+    lastStatus: typeof data?.last_status === 'number' ? data.last_status : null,
+    lastBody: data?.last_body || null,
+  };
+};
+
+const saveSpotifyRateLimit = async (
+  supabase: SupabaseClientInstance,
+  retryAfter: unknown,
+  { status = 429, body = null }: { status?: number; body?: unknown } = {},
+) => {
+  const retryAfterSeconds = parseRetryAfterSeconds(retryAfter);
+  const retryAfterUntil = new Date(Date.now() + retryAfterSeconds * 1000).toISOString();
+
+  const { error } = await supabase
+    .from('spotify_rate_limits')
+    .upsert(
+      {
+        provider: SPOTIFY_RATE_LIMIT_PROVIDER,
+        retry_after_seconds: retryAfterSeconds,
+        retry_after_until: retryAfterUntil,
+        last_status: status,
+        last_body: body || {},
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'provider' },
+    );
+
+  if (error) {
+    logError('spotify_rate_limit_save_failed', error, {
+      retryAfterSeconds,
+      retryAfterUntil,
+    });
+  } else {
+    logStep('spotify_rate_limit_saved', {
+      retryAfterSeconds,
+      retryAfterUntil,
+    });
+  }
+
+  return {
+    retryAfter: String(retryAfterSeconds),
+    retryAfterUntil,
+  };
 };
 
 const getSpotifyErrorMessage = (payload: Record<string, unknown>) => {
@@ -311,6 +636,35 @@ const getRawSpotifyArtistId = (artist: RequestArtist) => {
   };
 };
 
+const resolveSpotifyArtistFromRawId = (artist: RequestArtist): ResolvedSpotifyArtist | null => {
+  const rawSpotifyArtistId = getRawSpotifyArtistId(artist);
+
+  logStep('spotify_artist_id_candidate', {
+    id: artist.id,
+    externalId: artist.externalId,
+    external_id: artist.external_id,
+    name: artist.name,
+    source: artist.source,
+    resolvedSpotifyArtistId: rawSpotifyArtistId.id,
+    resolveMethod: rawSpotifyArtistId.method,
+    skippedBecauseMock: isMockArtistId(normalizeText(artist.externalId || artist.external_id || artist.id)),
+    skippedBecauseUuid: isUuid(normalizeText(artist.externalId || artist.external_id || artist.id)),
+  });
+
+  if (!rawSpotifyArtistId.id || !rawSpotifyArtistId.method) {
+    return null;
+  }
+
+  return {
+    ...artist,
+    externalId: rawSpotifyArtistId.id,
+    external_id: rawSpotifyArtistId.id,
+    source: 'spotify',
+    resolvedSpotifyArtistId: rawSpotifyArtistId.id,
+    resolveMethod: rawSpotifyArtistId.method,
+  };
+};
+
 const getArtistSearchQueries = (artist: RequestArtist) => {
   const name = normalizeText(artist.name);
   const normalizedName = normalizeName(name);
@@ -399,29 +753,10 @@ const resolveSpotifyArtist = async (
   accessToken: string,
   artist: RequestArtist,
 ): Promise<ResolvedSpotifyArtist | null> => {
-  const rawSpotifyArtistId = getRawSpotifyArtistId(artist);
+  const rawResolvedArtist = resolveSpotifyArtistFromRawId(artist);
 
-  logStep('spotify_artist_id_candidate', {
-    id: artist.id,
-    externalId: artist.externalId,
-    external_id: artist.external_id,
-    name: artist.name,
-    source: artist.source,
-    resolvedSpotifyArtistId: rawSpotifyArtistId.id,
-    resolveMethod: rawSpotifyArtistId.method,
-    skippedBecauseMock: isMockArtistId(normalizeText(artist.externalId || artist.external_id || artist.id)),
-    skippedBecauseUuid: isUuid(normalizeText(artist.externalId || artist.external_id || artist.id)),
-  });
-
-  if (rawSpotifyArtistId.id && rawSpotifyArtistId.method) {
-    return {
-      ...artist,
-      externalId: rawSpotifyArtistId.id,
-      external_id: rawSpotifyArtistId.id,
-      source: 'spotify',
-      resolvedSpotifyArtistId: rawSpotifyArtistId.id,
-      resolveMethod: rawSpotifyArtistId.method,
-    };
+  if (rawResolvedArtist) {
+    return rawResolvedArtist;
   }
 
   return resolveSpotifyArtistBySearch(accessToken, artist);
@@ -687,6 +1022,7 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
     retriedWithoutMarket,
     retryAfter: '',
     error: newsItems.length > 0 ? null : noMarketError,
+    source: 'spotify',
   };
 };
 
@@ -747,14 +1083,18 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
   if (!response.ok) {
     return {
       ...directResult,
+      status: response.status,
+      retryAfter,
       error: {
         name: 'SpotifyAlbumsSearchFallbackError',
         message: getSpotifyErrorMessage(payload) || directResult.error?.message || 'Spotify album search fallback failed.',
         statusCode: response.status,
         body: {
+          reason: getSpotifyErrorReason(response.status, payload),
           directError: directResult.error,
           searchUrl: searchUrl.toString(),
           searchPayload: payload,
+          retryAfter,
         },
         stack: '',
       },
@@ -796,6 +1136,7 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
       retriedWithoutMarket: false,
       retryAfter: '',
       error: null,
+      source: 'spotify',
     };
   }
 
@@ -1079,34 +1420,90 @@ Deno.serve(async (request) => {
       );
     }
 
-    const accessToken = await getSpotifyAccessToken(spotifyClientId, spotifyClientSecret);
-    const resolvedArtistResults = await Promise.all(
-      inputArtists.map(async (artist) => {
-        try {
-          const resolvedArtist = await resolveSpotifyArtist(accessToken, artist);
+    const spotifyRateLimitState = await getActiveSpotifyRateLimit(supabase);
+    const rawResolvedArtistResults = inputArtists.map((artist) => {
+      const resolvedArtist = resolveSpotifyArtistFromRawId(artist);
 
-          return {
-            inputArtist: artist,
-            resolvedArtist,
-            error: null,
-          };
-        } catch (error) {
-          logError('spotify_artist_resolve_failed', error, {
-            id: artist.id,
-            externalId: artist.externalId,
-            external_id: artist.external_id,
-            name: artist.name,
-            source: artist.source,
-          });
+      return {
+        inputArtist: artist,
+        resolvedArtist,
+        error: resolvedArtist ? null : {
+          name: 'SpotifyArtistIdMissing',
+          message: spotifyRateLimitState.isActive
+            ? 'Spotify rate limit is active, so alias search was skipped.'
+            : 'Artist needs Spotify alias search.',
+          statusCode: null,
+          body: null,
+          stack: '',
+        },
+      };
+    });
+    const artistsNeedingSearch = rawResolvedArtistResults
+      .filter((result) => !result.resolvedArtist)
+      .map((result) => result.inputArtist);
+    let accessToken = '';
+    let searchedArtistResults: Array<{
+      inputArtist: RequestArtist;
+      resolvedArtist: ResolvedSpotifyArtist | null;
+      error: ReturnType<typeof getErrorDetails> | null;
+    }> = [];
 
-          return {
-            inputArtist: artist,
-            resolvedArtist: null,
-            error: getErrorDetails(error),
-          };
-        }
-      }),
-    );
+    if (artistsNeedingSearch.length > 0 && !spotifyRateLimitState.isActive) {
+      accessToken = await getSpotifyAccessToken(spotifyClientId, spotifyClientSecret);
+      searchedArtistResults = await Promise.all(
+        artistsNeedingSearch.map(async (artist) => {
+          try {
+            const resolvedArtist = await resolveSpotifyArtistBySearch(accessToken, artist);
+
+            return {
+              inputArtist: artist,
+              resolvedArtist,
+              error: resolvedArtist ? null : {
+                name: 'SpotifyArtistIdNotFound',
+                message: 'Spotify artist search did not find a usable artist id.',
+                statusCode: null,
+                body: null,
+                stack: '',
+              },
+            };
+          } catch (error) {
+            logError('spotify_artist_resolve_failed', error, {
+              id: artist.id,
+              externalId: artist.externalId,
+              external_id: artist.external_id,
+              name: artist.name,
+              source: artist.source,
+            });
+
+            return {
+              inputArtist: artist,
+              resolvedArtist: null,
+              error: getErrorDetails(error),
+            };
+          }
+        }),
+      );
+    } else if (artistsNeedingSearch.length > 0 && spotifyRateLimitState.isActive) {
+      searchedArtistResults = artistsNeedingSearch.map((artist) => ({
+        inputArtist: artist,
+        resolvedArtist: null,
+        error: {
+          name: 'SpotifyRateLimitActive',
+          message: 'Spotify rate limit is active, so artist search was skipped.',
+          statusCode: 429,
+          body: {
+            retryAfter: spotifyRateLimitState.retryAfter,
+            retryAfterUntil: spotifyRateLimitState.retryAfterUntil,
+          },
+          stack: '',
+        },
+      }));
+    }
+
+    const resolvedArtistResults = [
+      ...rawResolvedArtistResults.filter((result) => result.resolvedArtist),
+      ...searchedArtistResults,
+    ];
     const spotifyArtists = resolvedArtistResults
       .map((result) => result.resolvedArtist)
       .filter((artist): artist is ResolvedSpotifyArtist => Boolean(artist?.resolvedSpotifyArtistId))
@@ -1117,6 +1514,8 @@ Deno.serve(async (request) => {
       requestedArtistCount: requestedArtists.length,
       inputArtistsWithRawSpotifyIdCount,
       resolvedSpotifyArtistCount: spotifyArtists.length,
+      spotifyRateLimitActive: spotifyRateLimitState.isActive,
+      spotifyRateLimitRetryAfter: spotifyRateLimitState.retryAfter,
       resolvedArtists: spotifyArtists.map((artist) => ({
         id: artist.id,
         externalId: artist.externalId,
@@ -1167,23 +1566,37 @@ Deno.serve(async (request) => {
 
     const cachedAlbumCandidates = getCachedAlbumCandidates(cachedNewsItems, spotifyArtists);
     let albumResults: SpotifyAlbumFetchResult[] = [];
-    let usedCachedAlbumNews = cachedAlbumCandidates.length > 0;
+    let usedCachedAlbumNews = false;
+    let usedServerAlbumCache = false;
+    let usedStaleServerAlbumCache = false;
     let rateLimitRetryAfter = '';
 
-    if (usedCachedAlbumNews) {
-      albumResults = [
-        {
-          artist: spotifyArtists[0],
-          newsItems: cachedAlbumCandidates,
-          status: 200,
-          itemCount: cachedAlbumCandidates.length,
-          marketItemCount: 0,
-          noMarketItemCount: 0,
-          retriedWithoutMarket: false,
-          retryAfter: '',
-          error: null,
-        },
-      ];
+    for (const artist of spotifyArtists.slice(0, MAX_TEST_ARTISTS)) {
+      const cachedResult = await getAlbumCacheResult(supabase, artist, {
+        allowStale: spotifyRateLimitState.isActive,
+      });
+
+      if (cachedResult) {
+        usedServerAlbumCache = true;
+        usedStaleServerAlbumCache = usedStaleServerAlbumCache || cachedResult.source === 'server_stale_cache';
+        albumResults.push(cachedResult);
+      }
+    }
+
+    if (cachedAlbumCandidates.length > 0) {
+      usedCachedAlbumNews = true;
+      albumResults.push({
+        artist: spotifyArtists[0],
+        newsItems: cachedAlbumCandidates,
+        status: 200,
+        itemCount: cachedAlbumCandidates.length,
+        marketItemCount: 0,
+        noMarketItemCount: 0,
+        retriedWithoutMarket: false,
+        retryAfter: '',
+        error: null,
+        source: 'client_cache',
+      });
 
       logStep('cached_album_candidates_used', {
         cachedAlbumCandidateCount: cachedAlbumCandidates.length,
@@ -1195,11 +1608,40 @@ Deno.serve(async (request) => {
           date: news.date,
         })),
       });
-    } else {
-      for (const artist of spotifyArtists.slice(0, MAX_TEST_ARTISTS)) {
+    }
+
+    const cachedArtistIds = new Set(
+      albumResults
+        .filter((result) => result.source === 'server_cache' || result.source === 'server_stale_cache')
+        .map((result) => getSpotifyArtistId(result.artist))
+        .filter(Boolean),
+    );
+    const artistsNeedingSpotifyAlbums = spotifyArtists
+      .slice(0, MAX_TEST_ARTISTS)
+      .filter((artist) => !cachedArtistIds.has(getSpotifyArtistId(artist)));
+
+    if (spotifyRateLimitState.isActive) {
+      rateLimitRetryAfter = spotifyRateLimitState.retryAfter;
+      logStep('spotify_rate_limit_active_skip_fetch', {
+        retryAfter: spotifyRateLimitState.retryAfter,
+        retryAfterUntil: spotifyRateLimitState.retryAfterUntil,
+        skippedArtistCount: artistsNeedingSpotifyAlbums.length,
+        usedServerAlbumCache,
+        usedStaleServerAlbumCache,
+      });
+    } else if (artistsNeedingSpotifyAlbums.length > 0) {
+      if (!accessToken) {
+        accessToken = await getSpotifyAccessToken(spotifyClientId, spotifyClientSecret);
+      }
+
+      for (const artist of artistsNeedingSpotifyAlbums) {
         try {
           const result = await fetchSpotifyAlbumsWithSearchFallback(accessToken, artist);
           albumResults.push(result);
+
+          if (!result.error) {
+            await saveAlbumCache(supabase, artist, result.newsItems);
+          }
 
           if (result.error?.statusCode === 429) {
             rateLimitRetryAfter = result.retryAfter || (
@@ -1207,13 +1649,25 @@ Deno.serve(async (request) => {
                 ? normalizeText((result.error.body as Record<string, unknown>).retryAfter)
                 : ''
             );
+            const savedRateLimit = await saveSpotifyRateLimit(supabase, rateLimitRetryAfter || 60, {
+              status: 429,
+              body: result.error.body || {},
+            });
+            rateLimitRetryAfter = savedRateLimit.retryAfter;
+            const staleCacheResult = await getAlbumCacheResult(supabase, artist, { allowStale: true });
+
+            if (staleCacheResult && !cachedArtistIds.has(getSpotifyArtistId(artist))) {
+              usedServerAlbumCache = true;
+              usedStaleServerAlbumCache = true;
+              albumResults.push(staleCacheResult);
+            }
 
             logStep('spotify_rate_limited_stop_remaining_artists', {
               artistName: artist.name,
               artistId: artist.externalId,
               retryAfter: rateLimitRetryAfter,
               checkedArtistCount: albumResults.length,
-              skippedArtistCount: Math.max(spotifyArtists.length - albumResults.length, 0),
+              skippedArtistCount: Math.max(artistsNeedingSpotifyAlbums.length - albumResults.length, 0),
             });
             break;
           }
@@ -1233,6 +1687,7 @@ Deno.serve(async (request) => {
             retriedWithoutMarket: false,
             retryAfter: '',
             error: getErrorDetails(error),
+            source: 'spotify',
           });
         }
       }
@@ -1241,7 +1696,9 @@ Deno.serve(async (request) => {
     const successfulAlbumArtistCount = albumResults.filter((result) => !result.error).length;
     const failedAlbumArtistCount = albumResults.filter((result) => result.error).length;
     const firstAlbumFailure = albumResults.find((result) => result.error)?.error || null;
-    const isRateLimited = albumResults.some((result) => result.error?.statusCode === 429);
+    const isRateLimited = albumResults.some((result) => result.error?.statusCode === 429)
+      || spotifyRateLimitState.isActive
+      || Boolean(rateLimitRetryAfter);
     const albumFailureDetails = albumResults
       .filter((result) => result.error)
       .map((result) => ({
@@ -1272,9 +1729,16 @@ Deno.serve(async (request) => {
       firstAlbumFailureBody: firstAlbumFailure?.body || null,
       isRateLimited,
       retryAfter: rateLimitRetryAfter,
+      spotifyRateLimitActive: spotifyRateLimitState.isActive,
+      spotifyRateLimitRetryAfter: spotifyRateLimitState.retryAfter,
+      spotifyRateLimitRetryAfterUntil: spotifyRateLimitState.retryAfterUntil,
       cachedNewsItemCount: cachedNewsItems.length,
       cachedAlbumCandidateCount: cachedAlbumCandidates.length,
       usedCachedAlbumNews,
+      usedServerAlbumCache,
+      usedStaleServerAlbumCache,
+      serverAlbumCacheResultCount: albumResults.filter((result) => result.source === 'server_cache').length,
+      staleServerAlbumCacheResultCount: albumResults.filter((result) => result.source === 'server_stale_cache').length,
       albumNewsCount: albumNews.length,
       dedupedAlbumNewsCount: dedupedAlbumNews.length,
       recentCandidateCount: recentCandidates.length,
@@ -1303,6 +1767,7 @@ Deno.serve(async (request) => {
         noMarketItemCount: result.noMarketItemCount,
         retriedWithoutMarket: result.retriedWithoutMarket,
         retryAfter: result.retryAfter,
+        source: result.source || 'spotify',
         error: result.error,
       })),
     };

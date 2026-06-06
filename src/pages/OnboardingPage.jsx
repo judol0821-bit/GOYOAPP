@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ensureArtistSaved } from '../api/artists.js';
+import { syncFollowedArtistSnapshots } from '../api/follows.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import useArtistSearch from '../hooks/useArtistSearch.js';
 import useLocalStorage from '../hooks/useLocalStorage.js';
+import { getAnonymousUserId } from '../utils/anonymousUser.js';
 import {
   getSafeArtistSnapshots,
   mergeArtistSnapshots,
@@ -26,6 +28,14 @@ export default function OnboardingPage() {
 
   const selectedArtistIds = Array.isArray(followedArtistIds) ? followedArtistIds : [];
   const safeArtistSnapshots = getSafeArtistSnapshots(followedArtistSnapshots);
+  const anonymousUserId = useMemo(() => getAnonymousUserId(), []);
+  const followedArtistSnapshotsKey = safeArtistSnapshots
+    .map((artist) => `${artist.id}:${artist.externalId}:${artist.source}`)
+    .join('|');
+
+  useEffect(() => {
+    syncFollowedArtistSnapshots(anonymousUserId, safeArtistSnapshots);
+  }, [anonymousUserId, followedArtistSnapshotsKey]);
 
   const getArtistFollowIds = (artist) => {
     const externalId = artist?.externalId || '';

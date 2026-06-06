@@ -1,76 +1,113 @@
-# GOYO Auto Notifications MVP
+# GOYO Auto Notifications
 
-GOYO now has the first server-side structure for automatic new-music push notifications.
+GOYO automatic new-music notifications are split into two Edge Functions.
 
-## Current Scope
+- `check-new-music-notifications`: single-user engine. It sends at most one new-music push for one `anonymousUserId`.
+- `check-new-music-notifications-batch`: scheduled batch runner. It finds users with enabled push subscriptions, loads their server-synced followed artists, and invokes the single-user engine sequentially.
 
-- The app already supports local notification settings and Web Push subscriptions.
-- `send-test-notification` remains available for direct push delivery tests.
-- `check-new-music-notifications` is the MVP engine for followed Spotify artists.
-- MyPage includes a small development-only button that manually invokes the engine.
+The MyPage `새 음악 알림 테스트` button remains available for development. Hide that button before public launch if the release should not expose manual push testing.
 
-This is not a full scheduled production system yet. It is a safe manual test path that can become a scheduled job later.
+## Required SQL
 
-## Data Model
+Apply these SQL files in Supabase:
 
-Run `supabase/notified_news.sql`.
+```powershell
+# Duplicate notification prevention
+supabase/notified_news.sql
 
-`notified_news` stores one row per user/news notification:
+# Web Push subscriptions
+supabase/push_subscriptions.sql
 
-- `anonymous_user_id`
-- `news_id`
-- `news_title`
-- `artist_name`
-- `type`
-- `notified_at`
+# Server-side copy of anonymous followed artists
+supabase/anonymous_artist_follows.sql
 
-The unique key `(anonymous_user_id, news_id)` prevents repeat notifications for the same news item.
+# Spotify album cache and rate-limit state
+supabase/album_cache.sql
+```
 
-## Edge Function Flow
+`anonymous_artist_follows` exists because the app still keeps `followedArtistIds` and `followedArtistSnapshots` in localStorage. The frontend now syncs those snapshots to Supabase so a server-side cron job can know which Spotify artists belong to each anonymous user.
 
-`check-new-music-notifications`:
+## Data Flow
 
-1. Receives `anonymousUserId` and Spotify artists from the client.
-2. Loads the latest enabled `push_subscriptions` row for that anonymous user.
-3. Uses Spotify Client Credentials secrets to fetch album/single data.
-4. Converts Spotify albums to GOYO news-like items with IDs such as `spotify_album_...`.
-5. Checks `notified_news` for duplicates.
-6. Sends one notification for the newest unnotified music item.
-7. Writes the sent item to `notified_news`.
-8. Disables expired subscriptions when Web Push returns `404` or `410`.
+1. User follows artists in onboarding.
+2. The app keeps existing localStorage keys unchanged.
+3. The app also syncs artist snapshots to `anonymous_artist_follows`.
+4. User enables push notifications, creating `push_subscriptions`.
+5. Cron invokes `check-new-music-notifications-batch`.
+6. Batch loads enabled users and their Spotify follows.
+7. Batch invokes `check-new-music-notifications` per user.
+8. Single-user function checks `album_cache` before calling Spotify.
+9. Cache misses call Spotify only when the global Spotify rate-limit window is not active.
+10. Single-user function checks `notified_news` and Web Push.
+11. Sent news is recorded in `notified_news` to prevent duplicates.
 
-Payload example:
+## Spotify Album Cache
+
+`album_cache` stores Spotify album lookup results by artist:
+
+- `artist_id`
+- `album_id`
+- `album_name`
+- `release_date`
+- `image_url`
+- `cached_at`
+
+`artist_album_cache_status` stores the last checked time even when Spotify returns zero albums, so GOYO does not re-query the same artist repeatedly in the same day.
+
+Cache policy:
+
+- cache TTL is 24 hours
+- the same artist should be fetched from Spotify at most once per day
+- fresh cache is used before Spotify
+- if Spotify is rate limited, stale cache can still be used
+- successful Spotify responses are upserted back into `album_cache`
+- Spotify 429 `Retry-After` values are stored in `spotify_rate_limits`
+- while the stored rate-limit window is active, Spotify calls are skipped
+
+## Rate Limits
+
+The batch runner is intentionally conservative:
+
+- default user limit: `20`
+- default artist limit per user: `2`
+- default send limit per run: `5`
+- users are processed sequentially
+- if Spotify returns `429`, the current run stops immediately
+- `Retry-After` is returned when Spotify provides it
+- `Retry-After` is saved so the next run can skip Spotify and use cache only
+
+Override limits with request body or Edge Function secrets:
 
 ```json
 {
-  "title": "GOYO",
-  "body": "wave to earth의 새 음악이 도착했어요: wave 0.01",
-  "data": {
-    "url": "/detail/spotify_album_..."
-  }
+  "limit": 10,
+  "artistLimit": 2,
+  "sendLimit": 3,
+  "dryRun": false
 }
 ```
 
-## Manual Test Flow
+Optional Edge Function env values:
 
-1. Apply `supabase/notified_news.sql`.
-2. Deploy the function:
-
-```powershell
-npx.cmd supabase functions deploy check-new-music-notifications --no-verify-jwt --project-ref skspszkqmkeekhnerfss
+```text
+GOYO_BATCH_USER_LIMIT=20
+GOYO_BATCH_ARTIST_LIMIT=2
+GOYO_BATCH_SEND_LIMIT=5
+GOYO_CRON_SECRET=
 ```
 
-3. Open GOYO MyPage.
-4. Turn on notifications and confirm a row exists in `push_subscriptions`.
-5. Follow at least one Spotify source artist.
-6. Click `새 음악 알림 테스트`.
-7. Confirm one push notification is received.
-8. Confirm a row is created in `notified_news`.
-9. Click the button again and confirm no duplicate notification is sent for the same item.
+If `GOYO_CRON_SECRET` is set, callers must include `x-goyo-cron-secret`.
 
-## Required Secrets
+## Deploy
 
-Supabase Edge Function secrets:
+Deploy with JWT verification enabled:
+
+```powershell
+npx.cmd supabase functions deploy check-new-music-notifications --project-ref skspszkqmkeekhnerfss
+npx.cmd supabase functions deploy check-new-music-notifications-batch --project-ref skspszkqmkeekhnerfss
+```
+
+Required Edge Function secrets:
 
 ```powershell
 npx.cmd supabase secrets set SPOTIFY_CLIENT_ID="..." --project-ref skspszkqmkeekhnerfss
@@ -78,18 +115,70 @@ npx.cmd supabase secrets set SPOTIFY_CLIENT_SECRET="..." --project-ref skspszkqm
 npx.cmd supabase secrets set VAPID_PUBLIC_KEY="..." --project-ref skspszkqmkeekhnerfss
 npx.cmd supabase secrets set VAPID_PRIVATE_KEY="..." --project-ref skspszkqmkeekhnerfss
 npx.cmd supabase secrets set VAPID_SUBJECT="mailto:your-email@example.com" --project-ref skspszkqmkeekhnerfss
+npx.cmd supabase secrets set GOYO_CRON_SECRET="replace-with-random-secret" --project-ref skspszkqmkeekhnerfss
 ```
 
-`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase Edge Functions.
+## Manual Batch Test
 
-## Future Automation
+Use a service role key only from a trusted server or local terminal. Never expose it in the frontend.
 
-For production automatic delivery, add:
+```powershell
+$body = @{
+  limit = 3
+  artistLimit = 2
+  sendLimit = 1
+  dryRun = $true
+} | ConvertTo-Json
 
-- a server-side followed artists table,
-- saved notification settings per anonymous user,
-- a Supabase Scheduled Function or cron trigger,
-- batching/rate limiting,
-- retry and expired-subscription cleanup reporting.
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "https://skspszkqmkeekhnerfss.supabase.co/functions/v1/check-new-music-notifications-batch" `
+  -Headers @{
+    "Authorization" = "Bearer <SUPABASE_SERVICE_ROLE_KEY>"
+    "apikey" = "<SUPABASE_SERVICE_ROLE_KEY>"
+    "Content-Type" = "application/json"
+    "x-goyo-cron-secret" = "<GOYO_CRON_SECRET>"
+  } `
+  -Body $body
+```
 
-The current MVP intentionally keeps artist follow state client-provided so the existing app data model does not need a large migration yet.
+Set `dryRun = $false` after checking the response.
+
+## Cron Options
+
+### External Cron
+
+Use Vercel Cron, GitHub Actions, cron-job.org, or another trusted scheduler to POST to:
+
+```text
+https://skspszkqmkeekhnerfss.supabase.co/functions/v1/check-new-music-notifications-batch
+```
+
+Recommended cadence for MVP:
+
+```text
+0 */6 * * *
+```
+
+That means every 6 hours. Avoid short intervals while Spotify rate limits are being observed.
+
+### Supabase Cron
+
+If using `pg_cron` and `pg_net`, store secrets through Supabase Vault rather than hard-coding service role keys in SQL. The HTTP request should include:
+
+- `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>`
+- `apikey: <SUPABASE_SERVICE_ROLE_KEY>`
+- `Content-Type: application/json`
+- `x-goyo-cron-secret: <GOYO_CRON_SECRET>`
+
+Use the same JSON body shape as the manual batch test.
+
+## Remaining Production Work
+
+- Apply `supabase/anonymous_artist_follows.sql`.
+- Apply `supabase/album_cache.sql`.
+- Deploy the batch Edge Function.
+- Set `GOYO_CRON_SECRET`.
+- Configure an external cron or Supabase cron.
+- Watch Spotify 429 frequency and tune `limit`, `artistLimit`, and schedule interval.
+- Hide the MyPage development test button before public release if needed.

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getArtistById } from '../api/artists.js';
 import { clearCalendarEvents as clearRemoteCalendarEvents, getCalendarEvents } from '../api/calendar.js';
+import { clearRemoteFollowedArtists, syncFollowedArtistSnapshots } from '../api/follows.js';
 import { checkNewMusicNotifications } from '../api/notifications.js';
 import { clearHiddenNews as clearRemoteHiddenNews, getHiddenNews } from '../api/preferences.js';
 import {
@@ -92,6 +93,17 @@ export default function MyPage() {
   const followedArtistSnapshotsKey = safeArtistSnapshots
     .map((artist) => `${artist.id}:${artist.externalId}`)
     .join('|');
+
+  useEffect(() => {
+    if (safeFollowedArtistIds.length === 0) {
+      clearRemoteFollowedArtists(anonymousUserId);
+      return;
+    }
+
+    if (safeArtistSnapshots.length > 0) {
+      syncFollowedArtistSnapshots(anonymousUserId, safeArtistSnapshots);
+    }
+  }, [anonymousUserId, followedArtistIdsKey, followedArtistSnapshotsKey]);
 
   useEffect(() => {
     if (!window.matchMedia) {
@@ -804,7 +816,11 @@ export default function MyPage() {
     }
 
     try {
-      await Promise.all([clearRemoteCalendarEvents(anonymousUserId), clearRemoteHiddenNews(anonymousUserId)]);
+      await Promise.all([
+        clearRemoteCalendarEvents(anonymousUserId),
+        clearRemoteFollowedArtists(anonymousUserId),
+        clearRemoteHiddenNews(anonymousUserId),
+      ]);
     } catch (error) {
       console.warn('Remote reset failed. Local data will still be cleared.', error);
     }
