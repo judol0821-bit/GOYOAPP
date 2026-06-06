@@ -66,6 +66,14 @@ type SpotifyAlbumFetchResult = {
   error: ReturnType<typeof getErrorDetails> | null;
 };
 
+type SpotifyAlbumPageResult = {
+  ok: boolean;
+  status: number;
+  url: string;
+  payload: Record<string, unknown>;
+  items: SpotifyAlbum[];
+};
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-goyo-anonymous-id',
@@ -153,6 +161,82 @@ const getFirstImageUrl = (images: SpotifyAlbum['images']) => {
 
   return images.find((image) => image?.url)?.url || '';
 };
+
+const getSpotifyErrorMessage = (payload: Record<string, unknown>) => {
+  const error = payload?.error;
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const value = error as Record<string, unknown>;
+    return normalizeText(value.message) || normalizeText(value.reason) || normalizeText(value.status);
+  }
+
+  return normalizeText(payload?.error_description) || normalizeText(payload?.message);
+};
+
+const getSpotifyErrorReason = (status: number, payload: Record<string, unknown>) => {
+  const message = getSpotifyErrorMessage(payload);
+  const loweredMessage = message.toLowerCase();
+
+  if (status === 401 || /invalid token|invalid access token|expired/i.test(message)) {
+    return 'invalid_token';
+  }
+
+  if (status === 403 && /premium/i.test(message)) {
+    return 'premium_required';
+  }
+
+  if (status === 403) {
+    return 'forbidden';
+  }
+
+  if (status === 429) {
+    return 'rate_limited';
+  }
+
+  if (/market|country|territory/.test(loweredMessage)) {
+    return 'market_restricted';
+  }
+
+  return 'spotify_api_failed';
+};
+
+const createSpotifyAlbumsError = ({
+  message,
+  status,
+  artistName,
+  artistId,
+  url,
+  payload,
+  retryUrl = '',
+  retryPayload = null,
+}: {
+  message: string;
+  status: number | null;
+  artistName: string;
+  artistId: string;
+  url: string;
+  payload: Record<string, unknown> | null;
+  retryUrl?: string;
+  retryPayload?: Record<string, unknown> | null;
+}) => ({
+  name: 'SpotifyAlbumsError',
+  message,
+  statusCode: status,
+  body: {
+    reason: status ? getSpotifyErrorReason(status, payload || {}) : 'spotify_api_failed',
+    artistName,
+    artistId,
+    url,
+    payload,
+    retryUrl,
+    retryPayload,
+  },
+  stack: '',
+});
 
 const getEndpointPrefix = (endpoint: string) => endpoint.slice(0, 40);
 
@@ -325,6 +409,11 @@ const resolveSpotifyArtist = async (
 const getSpotifyArtistId = (artist: RequestArtist) => normalizeText(artist.externalId || artist.external_id);
 
 const getSpotifyAccessToken = async (clientId: string, clientSecret: string) => {
+  logStep('spotify_token_request_started', {
+    hasClientId: Boolean(clientId),
+    hasClientSecret: Boolean(clientSecret),
+  });
+
   const credentials = btoa(`${clientId}:${clientSecret}`);
   const response = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -345,6 +434,13 @@ const getSpotifyAccessToken = async (clientId: string, clientSecret: string) => 
     };
   }
 
+  logStep('spotify_token_ready', {
+    status: response.status,
+    hasAccessToken: Boolean(payload.access_token),
+    tokenType: payload?.token_type || '',
+    expiresIn: payload?.expires_in || null,
+  });
+
   return String(payload.access_token);
 };
 
@@ -352,7 +448,7 @@ const fetchSpotifyAlbumPage = async (
   accessToken: string,
   spotifyArtistId: string,
   { market }: { market: string },
-) => {
+): Promise<SpotifyAlbumPageResult> => {
   const url = new URL(`https://api.spotify.com/v1/artists/${encodeURIComponent(spotifyArtistId)}/albums`);
   url.searchParams.set('include_groups', 'album,single');
   url.searchParams.set('limit', '20');
@@ -413,31 +509,12 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
     errorBody: marketResult.ok ? null : marketResult.payload,
   });
 
-  if (!marketResult.ok) {
-    return {
-      artist,
-      newsItems: [],
-      status: marketResult.status,
-      itemCount: 0,
-      marketItemCount: 0,
-      noMarketItemCount: 0,
-      retriedWithoutMarket: false,
-      error: {
-        name: 'SpotifyAlbumsError',
-        message: marketResult.payload?.error?.message || 'Spotify artist albums API failed.',
-        statusCode: marketResult.status,
-        body: marketResult.payload,
-        stack: '',
-      },
-    };
-  }
-
-  let finalItems = marketResult.items;
+  let finalItems = marketResult.ok ? marketResult.items : [];
   let noMarketItemCount = 0;
   let retriedWithoutMarket = false;
   let noMarketError: ReturnType<typeof getErrorDetails> | null = null;
 
-  if (finalItems.length === 0) {
+  if (!marketResult.ok || finalItems.length === 0) {
     retriedWithoutMarket = true;
     const noMarketResult = await fetchSpotifyAlbumPage(accessToken, spotifyArtistId, { market: '' });
     noMarketItemCount = noMarketResult.items.length;
@@ -450,19 +527,51 @@ const fetchSpotifyAlbums = async (accessToken: string, artist: RequestArtist): P
       itemCount: noMarketResult.items.length,
       url: noMarketResult.url,
       errorBody: noMarketResult.ok ? null : noMarketResult.payload,
+      retriedBecause: marketResult.ok ? 'empty_market_result' : 'market_request_failed',
     });
 
     if (noMarketResult.ok) {
       finalItems = noMarketResult.items;
     } else {
-      noMarketError = {
-        name: 'SpotifyAlbumsNoMarketRetryError',
-        message: noMarketResult.payload?.error?.message || 'Spotify artist albums retry without market failed.',
-        statusCode: noMarketResult.status,
-        body: noMarketResult.payload,
-        stack: '',
-      };
+      noMarketError = createSpotifyAlbumsError({
+        message: getSpotifyErrorMessage(noMarketResult.payload) || 'Spotify artist albums retry without market failed.',
+        status: noMarketResult.status,
+        artistName,
+        artistId: spotifyArtistId,
+        url: marketResult.url,
+        payload: marketResult.payload,
+        retryUrl: noMarketResult.url,
+        retryPayload: noMarketResult.payload,
+      });
     }
+  }
+
+  if (!marketResult.ok && finalItems.length === 0) {
+    const error = createSpotifyAlbumsError({
+      message: getSpotifyErrorMessage(marketResult.payload) || 'Spotify artist albums API failed.',
+      status: marketResult.status,
+      artistName,
+      artistId: spotifyArtistId,
+      url: marketResult.url,
+      payload: marketResult.payload,
+      retryUrl: noMarketError?.body && typeof noMarketError.body === 'object'
+        ? normalizeText((noMarketError.body as Record<string, unknown>).retryUrl)
+        : '',
+      retryPayload: noMarketError?.body && typeof noMarketError.body === 'object'
+        ? ((noMarketError.body as Record<string, unknown>).retryPayload as Record<string, unknown> | null)
+        : null,
+    });
+
+    return {
+      artist,
+      newsItems: [],
+      status: marketResult.status,
+      itemCount: 0,
+      marketItemCount: 0,
+      noMarketItemCount,
+      retriedWithoutMarket,
+      error,
+    };
   }
 
   const newsItems = finalItems.map((album: SpotifyAlbum) => {
@@ -507,14 +616,14 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
 ): Promise<SpotifyAlbumFetchResult> => {
   const directResult = await fetchSpotifyAlbums(accessToken, artist);
 
-  if (directResult.newsItems.length > 0 || directResult.error?.statusCode !== 429) {
+  if (directResult.newsItems.length > 0) {
     return directResult;
   }
 
   const spotifyArtistId = getSpotifyArtistId(artist);
   const artistName = normalizeText(artist.name);
 
-  if (!artistName) {
+  if (!artistName || directResult.error?.statusCode === 401 || directResult.error?.statusCode === 403) {
     return directResult;
   }
 
@@ -546,10 +655,24 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
     itemCount: filteredItems.length,
     url: searchUrl.toString(),
     errorBody: response.ok ? null : payload,
+    fallbackReason: directResult.error?.message || 'empty_albums_result',
   });
 
   if (!response.ok) {
-    return directResult;
+    return {
+      ...directResult,
+      error: {
+        name: 'SpotifyAlbumsSearchFallbackError',
+        message: getSpotifyErrorMessage(payload) || directResult.error?.message || 'Spotify album search fallback failed.',
+        statusCode: response.status,
+        body: {
+          directError: directResult.error,
+          searchUrl: searchUrl.toString(),
+          searchPayload: payload,
+        },
+        stack: '',
+      },
+    };
   }
 
   const newsItems = filteredItems.map((album: SpotifyAlbum) => {
@@ -576,18 +699,34 @@ const fetchSpotifyAlbumsWithSearchFallback = async (
     };
   });
 
-  return newsItems.length > 0
-    ? {
-        artist,
-        newsItems,
-        status: response.status,
-        itemCount: newsItems.length,
-        marketItemCount: 0,
-        noMarketItemCount: 0,
-        retriedWithoutMarket: false,
-        error: null,
-      }
-    : directResult;
+  if (newsItems.length > 0) {
+    return {
+      artist,
+      newsItems,
+      status: response.status,
+      itemCount: newsItems.length,
+      marketItemCount: 0,
+      noMarketItemCount: 0,
+      retriedWithoutMarket: false,
+      error: null,
+    };
+  }
+
+  return {
+    ...directResult,
+    error: directResult.error
+      ? {
+          ...directResult.error,
+          body: {
+            directError: directResult.error,
+            searchUrl: searchUrl.toString(),
+            searchStatus: response.status,
+            searchItemCount: items.length,
+            filteredSearchItemCount: filteredItems.length,
+          },
+        }
+      : null,
+  };
 };
 
 const dedupeNews = (newsItems: MusicNewsItem[]) => {
@@ -889,6 +1028,16 @@ Deno.serve(async (request) => {
     const successfulAlbumArtistCount = albumResults.filter((result) => !result.error).length;
     const failedAlbumArtistCount = albumResults.filter((result) => result.error).length;
     const firstAlbumFailure = albumResults.find((result) => result.error)?.error || null;
+    const albumFailureDetails = albumResults
+      .filter((result) => result.error)
+      .map((result) => ({
+        artistName: result.artist.name,
+        artistId: result.artist.externalId || result.artist.external_id || result.artist.id,
+        resolvedSpotifyArtistId: (result.artist as RequestArtist & { resolvedSpotifyArtistId?: string }).resolvedSpotifyArtistId,
+        status: result.error?.statusCode || null,
+        message: result.error?.message || '',
+        body: result.error?.body || null,
+      }));
     const dedupedAlbumNews = sortNews(dedupeNews(albumNews));
     const recentCandidates = sortNews(filterRecentMusic(dedupedAlbumNews));
     const candidates = isTestMode && recentCandidates.length === 0 ? dedupedAlbumNews : recentCandidates;
@@ -902,11 +1051,13 @@ Deno.serve(async (request) => {
       failedAlbumArtistCount,
       firstAlbumFailureReason: firstAlbumFailure?.message || '',
       firstAlbumFailureStatus: firstAlbumFailure?.statusCode || null,
+      firstAlbumFailureBody: firstAlbumFailure?.body || null,
       albumNewsCount: albumNews.length,
       dedupedAlbumNewsCount: dedupedAlbumNews.length,
       recentCandidateCount: recentCandidates.length,
       candidateCount: candidates.length,
       usedLatestAlbumFallback: isTestMode && recentCandidates.length === 0 && dedupedAlbumNews.length > 0,
+      albumFailureDetails,
       resolvedArtistDetails: spotifyArtists.map((artist) => ({
         id: artist.id,
         externalId: artist.externalId,

@@ -689,6 +689,22 @@ export default function MyPage() {
       return '';
     }
 
+    const compactFailureBody = (() => {
+      if (!debug.firstAlbumFailureBody) {
+        return '';
+      }
+
+      try {
+        const value =
+          typeof debug.firstAlbumFailureBody === 'string'
+            ? debug.firstAlbumFailureBody
+            : JSON.stringify(debug.firstAlbumFailureBody);
+
+        return value.length > 180 ? `${value.slice(0, 180)}...` : value;
+      } catch {
+        return String(debug.firstAlbumFailureBody);
+      }
+    })();
     const inputArtistCount = debug.inputArtistCount ?? 0;
     const spotifyArtistCount = debug.resolvedSpotifyArtistCount ?? debug.spotifyArtistCount ?? 0;
     const successfulAlbumArtistCount = debug.successfulAlbumArtistCount ?? 0;
@@ -696,7 +712,9 @@ export default function MyPage() {
     const albumNewsCount = debug.albumNewsCount ?? 0;
     const candidateCount = debug.candidateCount ?? 0;
     const firstAlbumFailureReason = debug.firstAlbumFailureReason || '';
-    const failureText = firstAlbumFailureReason ? ` · 첫 실패 ${firstAlbumFailureReason}` : '';
+    const failureText = firstAlbumFailureReason
+      ? ` · 첫 실패 ${firstAlbumFailureReason}${debug.firstAlbumFailureStatus ? ` (${debug.firstAlbumFailureStatus})` : ''}${compactFailureBody ? ` · body ${compactFailureBody}` : ''}`
+      : '';
 
     return `전체 ${inputArtistCount}명 · Spotify ID ${spotifyArtistCount}명 · 조회 성공 ${successfulAlbumArtistCount}명 · 조회 실패 ${failedAlbumArtistCount}명 · 앨범 ${albumNewsCount}개 · 후보 ${candidateCount}개${failureText}`;
   };

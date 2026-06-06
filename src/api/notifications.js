@@ -66,12 +66,30 @@ const getDebugSummary = (debug) => {
     return '';
   }
 
+  const compactBody = (() => {
+    if (!debug.firstAlbumFailureBody) {
+      return '';
+    }
+
+    try {
+      const value =
+        typeof debug.firstAlbumFailureBody === 'string'
+          ? debug.firstAlbumFailureBody
+          : JSON.stringify(debug.firstAlbumFailureBody);
+
+      return value.length > 180 ? `${value.slice(0, 180)}...` : value;
+    } catch {
+      return String(debug.firstAlbumFailureBody);
+    }
+  })();
   const artistCount = debug.resolvedSpotifyArtistCount ?? debug.spotifyArtistCount ?? 0;
   const successfulAlbumArtistCount = debug.successfulAlbumArtistCount ?? 0;
   const failedAlbumArtistCount = debug.failedAlbumArtistCount ?? 0;
   const albumCount = debug.albumNewsCount ?? 0;
   const candidateCount = debug.candidateCount ?? 0;
-  const firstFailure = debug.firstAlbumFailureReason ? `, 첫 실패 ${debug.firstAlbumFailureReason}` : '';
+  const firstFailure = debug.firstAlbumFailureReason
+    ? `, 첫 실패 ${debug.firstAlbumFailureReason}${debug.firstAlbumFailureStatus ? ` (${debug.firstAlbumFailureStatus})` : ''}${compactBody ? `, body ${compactBody}` : ''}`
+    : '';
 
   return `전체 ${debug.inputArtistCount ?? 0}명, Spotify ID ${artistCount}명, 조회 성공 ${successfulAlbumArtistCount}명, 조회 실패 ${failedAlbumArtistCount}명, 앨범 ${albumCount}개, 후보 ${candidateCount}개${firstFailure}`;
 };
