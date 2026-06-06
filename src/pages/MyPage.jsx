@@ -32,8 +32,6 @@ import {
   getVapidPublicKey,
   getPushSupportDetails,
   getServiceWorkerRegistration,
-  isPushSupported,
-  refreshPushSubscription,
   unsubscribeFromPush,
   urlBase64ToUint8Array,
 } from '../utils/webPush.js';
@@ -313,8 +311,10 @@ export default function MyPage() {
     return '알림 권한을 허용해야 푸시를 준비할 수 있어요.';
   };
 
-  const createDebugRecorder = () => {
+  const createDebugRecorder = ({ publish } = {}) => {
     const debugMap = new Map();
+
+    const toItems = () => Array.from(debugMap.entries()).map(([label, value]) => ({ label, value }));
 
     const record = (label, value) => {
       const displayValue =
@@ -328,10 +328,13 @@ export default function MyPage() {
 
       debugMap.set(label, displayValue);
       console.log('[GOYO Web Push Debug]', label, value);
+
+      if (typeof publish === 'function') {
+        publish(toItems());
+      }
+
       return displayValue;
     };
-
-    const toItems = () => Array.from(debugMap.entries()).map(([label, value]) => ({ label, value }));
 
     return { record, toItems };
   };
@@ -362,6 +365,7 @@ export default function MyPage() {
     record('VAPID public key 길이', vapidPublicKey.length);
     record('anonymousUserId', anonymousUserId);
     record('x-goyo-anonymous-id 준비 여부', Boolean(anonymousUserId));
+    record('pushManager.subscribe() 호출 여부', '아직 호출 안 함');
     record('pushManager.subscribe() 성공 여부', '아직 호출 안 함');
     record('savePushSubscription() 호출 여부', '아직 호출 안 함');
     record('Supabase insert/upsert 성공 여부', '아직 호출 안 함');
@@ -425,29 +429,44 @@ export default function MyPage() {
     });
   };
 
-  const handleForceWebPushResubscribe = async () => {
-    const { record, toItems } = createDebugRecorder();
-
+  const runWebPushSubscribeFlow = async ({
+    loadingTitle = 'Web Push 구독 중',
+    successTitle = 'Web Push 구독 완료',
+    failureTitle = 'Web Push 구독 실패',
+    successMessage = 'Web Push 구독이 저장됐어요.',
+  } = {}) => {
+    setIsRefreshingPush(true);
     setWebPushDebug({
       isLoading: true,
-      title: '강제 재구독 중',
+      title: loadingTitle,
       status: 'loading',
       items: [],
     });
 
+    const { record, toItems } = createDebugRecorder({
+      publish: (items) => {
+        setWebPushDebug((current) => ({
+          ...current,
+          items,
+        }));
+      },
+    });
+
     try {
+      const supportDetails = getPushSupportDetails();
       const vapidPublicKey = getVapidPublicKey();
 
       record('현재 URL', window.location.href);
       record('isSecureContext', window.isSecureContext);
       record('Notification 지원 여부', isNotificationSupported());
       record('Notification.permission', getNotificationPermission());
-      record('Service Worker 지원 여부', 'serviceWorker' in navigator);
-      record('PushManager 지원 여부', 'PushManager' in window);
+      record('Service Worker 지원 여부', supportDetails.hasServiceWorkerSupport);
+      record('PushManager 지원 여부', supportDetails.hasPushManagerSupport);
       record('VITE_VAPID_PUBLIC_KEY 존재 여부', Boolean(vapidPublicKey));
       record('VAPID public key 길이', vapidPublicKey.length);
       record('anonymousUserId', anonymousUserId);
       record('x-goyo-anonymous-id 준비 여부', Boolean(anonymousUserId));
+      record('pushManager.subscribe() 호출 여부', '아직 호출 안 함');
       record('pushManager.subscribe() 성공 여부', '아직 호출 안 함');
       record('savePushSubscription() 호출 여부', '아직 호출 안 함');
       record('Supabase insert/upsert 성공 여부', '아직 호출 안 함');
@@ -463,6 +482,18 @@ export default function MyPage() {
 
       if (permission !== 'granted') {
         throw new Error(getPermissionBlockedMessage(permission));
+      }
+
+      if (!supportDetails.hasServiceWorkerSupport) {
+        throw new Error('Service Worker를 지원하지 않는 브라우저예요.');
+      }
+
+      if (!supportDetails.hasPushManagerSupport) {
+        throw new Error('PushManager를 지원하지 않는 브라우저예요.');
+      }
+
+      if (!supportDetails.isSecureContext) {
+        throw new Error('Web Push는 HTTPS 또는 localhost에서만 사용할 수 있어요.');
       }
 
       if (!vapidPublicKey) {
@@ -498,111 +529,79 @@ export default function MyPage() {
         throw new Error(`Supabase 기존 구독 비활성화 실패: ${disableAllResult.message}`);
       }
 
-      const nextSubscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-      });
+      let nextSubscription = null;
+
+      try {
+        record('pushManager.subscribe() 호출 여부', '예');
+        nextSubscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        });
+        record('pushManager.subscribe() 성공 여부', true);
+      } catch (subscribeError) {
+        console.error('[GOYO Web Push Debug] subscribe failed', subscribeError);
+        record('pushManager.subscribe() 성공 여부', false);
+        record('실패 원인', `subscribe failed: ${subscribeError?.message || subscribeError}`);
+        throw new Error(`subscribe failed: ${subscribeError?.message || subscribeError}`);
+      }
+
       const nextDebug = readSubscriptionDebug(nextSubscription);
 
-      record('pushManager.subscribe() 성공 여부', true);
       record('subscription.endpoint 앞 50자', nextDebug.endpointPrefix || '-');
       record('subscription p256dh 존재 여부', nextDebug.hasP256dh);
       record('subscription auth 존재 여부', nextDebug.hasAuth);
       record('savePushSubscription() 호출 여부', '예');
 
-      const saveResult = await savePushSubscriptionWithResult(nextSubscription, anonymousUserId);
-      record('Supabase insert/upsert 성공 여부', saveResult.ok);
-      record('Supabase error message', saveResult.ok ? '-' : saveResult.message);
-      record('Supabase subscription id', saveResult.data?.id || '-');
+      let saveResult = null;
 
-      if (!saveResult.ok) {
-        throw new Error(`Supabase 저장 실패: ${saveResult.message}`);
+      try {
+        saveResult = await savePushSubscriptionWithResult(nextSubscription, anonymousUserId);
+        record('Supabase insert/upsert 성공 여부', saveResult.ok);
+        record('Supabase error message', saveResult.ok ? '-' : saveResult.message);
+        record('Supabase subscription id', saveResult.data?.id || '-');
+      } catch (saveError) {
+        console.error('[GOYO Web Push Debug] save failed', saveError);
+        record('Supabase insert/upsert 성공 여부', false);
+        record('Supabase error message', saveError?.message || saveError);
+        record('실패 원인', `save failed: ${saveError?.message || saveError}`);
+        throw new Error(`save failed: ${saveError?.message || saveError}`);
+      }
+
+      if (!saveResult?.ok) {
+        throw new Error(`save failed: ${saveResult?.message || 'Supabase 저장에 실패했어요.'}`);
       }
 
       setNotificationSettings((currentSettings) => ({
         ...getSafeNotificationSettings(currentSettings),
         enabled: true,
       }));
-      setPushStatusMessage('강제 재구독 완료');
+      setPushStatusMessage(successMessage);
       setWebPushDebug({
         isLoading: false,
-        title: '강제 재구독 완료',
+        title: successTitle,
         status: 'success',
         items: toItems(),
       });
+
+      return { ok: true, message: successMessage };
     } catch (error) {
-      console.error('[GOYO Web Push Debug] force resubscribe failed', error);
+      console.error('[GOYO Web Push Debug] subscribe flow failed', error);
       record('실패 원인', error?.message || error);
-      setPushStatusMessage(`강제 재구독 실패: ${error?.message || error}`);
+      setNotificationSettings((currentSettings) => ({
+        ...getSafeNotificationSettings(currentSettings),
+        enabled: false,
+      }));
+      setPushStatusMessage(`${failureTitle}: ${error?.message || error}`);
       setWebPushDebug({
         isLoading: false,
-        title: '강제 재구독 실패',
+        title: failureTitle,
         status: 'error',
         items: toItems(),
       });
-    }
-  };
-
-  const renewPushSubscription = async ({ successMessage = '구독 갱신 완료' } = {}) => {
-    if (!isPushSupported()) {
-      const supportDetails = getPushSupportDetails();
-      console.error('Web Push support check failed.', supportDetails);
 
       return {
         ok: false,
-        message: !supportDetails.hasVapidPublicKey
-          ? '구독 생성 실패: VITE_VAPID_PUBLIC_KEY가 없어요.'
-          : !supportDetails.isSecureContext
-            ? '구독 생성 실패: HTTPS 환경이 필요해요.'
-            : '구독 생성 실패: 이 브라우저는 Web Push를 지원하지 않아요.',
-      };
-    }
-
-    setIsRefreshingPush(true);
-
-    try {
-      const refreshResult = await refreshPushSubscription({
-        beforeSubscribe: async ({ previousEndpoint }) => {
-          const disableAllResult = await disableAllPushSubscriptions(anonymousUserId);
-
-          if (!disableAllResult.ok) {
-            throw new Error(`Supabase 기존 구독 비활성화 실패: ${disableAllResult.message}`);
-          }
-
-          if (previousEndpoint) {
-            await disablePushSubscription(previousEndpoint, anonymousUserId);
-          }
-        },
-      });
-
-      if (!refreshResult.ok || !refreshResult.subscription) {
-        return {
-          ok: false,
-          message: `구독 생성 실패: ${refreshResult.message}`,
-        };
-      }
-
-      const saveResult = await savePushSubscriptionWithResult(refreshResult.subscription, anonymousUserId);
-
-      if (!saveResult.ok) {
-        return {
-          ok: false,
-          message: `Supabase 저장 실패: ${saveResult.message}`,
-        };
-      }
-
-      return {
-        ok: true,
-        message: successMessage,
-        previousEndpoint: refreshResult.previousEndpoint,
-        endpoint: saveResult.endpoint,
-      };
-    } catch (error) {
-      console.error('Push subscription renewal failed.', error);
-
-      return {
-        ok: false,
-        message: error?.message || '구독 갱신에 실패했어요.',
+        message: error?.message || failureTitle,
       };
     } finally {
       setIsRefreshingPush(false);
@@ -610,27 +609,21 @@ export default function MyPage() {
   };
 
   const requestAndEnableNotifications = async () => {
-    const permission = await requestNotificationPermission();
-    setNotificationPermission(permission);
-
-    if (permission !== 'granted') {
-      setPushStatusMessage(getPermissionBlockedMessage(permission));
-      setNotificationSettings((currentSettings) => ({
-        ...getSafeNotificationSettings(currentSettings),
-        enabled: false,
-      }));
-      return;
-    }
-
-    const renewResult = await renewPushSubscription({
+    await runWebPushSubscribeFlow({
+      loadingTitle: '알림 ON 구독 중',
+      successTitle: '알림 ON 구독 완료',
+      failureTitle: '알림 ON 구독 실패',
       successMessage: 'Web Push 구독이 저장됐어요.',
     });
+  };
 
-    setPushStatusMessage(renewResult.message);
-    setNotificationSettings((currentSettings) => ({
-      ...getSafeNotificationSettings(currentSettings),
-      enabled: renewResult.ok,
-    }));
+  const handleForceWebPushResubscribe = async () => {
+    await runWebPushSubscribeFlow({
+      loadingTitle: '강제 재구독 중',
+      successTitle: '강제 재구독 완료',
+      failureTitle: '강제 재구독 실패',
+      successMessage: '강제 재구독 완료',
+    });
   };
 
   const disableNotifications = async () => {
@@ -681,30 +674,12 @@ export default function MyPage() {
   };
 
   const handleRefreshPushSubscription = async () => {
-    let permission = getNotificationPermission();
-
-    if (permission !== 'granted') {
-      permission = await requestNotificationPermission();
-      setNotificationPermission(permission);
-    }
-
-    if (permission !== 'granted') {
-      setPushStatusMessage(getPermissionBlockedMessage(permission));
-      return;
-    }
-
-    const renewResult = await renewPushSubscription({
+    await runWebPushSubscribeFlow({
+      loadingTitle: '구독 갱신 중',
+      successTitle: '구독 갱신 완료',
+      failureTitle: '구독 갱신 실패',
       successMessage: '구독 갱신 완료',
     });
-
-    setPushStatusMessage(renewResult.message);
-
-    if (renewResult.ok) {
-      setNotificationSettings((currentSettings) => ({
-        ...getSafeNotificationSettings(currentSettings),
-        enabled: true,
-      }));
-    }
   };
 
   const getNotificationDebugText = (result) => {
