@@ -4,7 +4,11 @@ import { getArtistById } from '../api/artists.js';
 import { clearCalendarEvents as clearRemoteCalendarEvents, getCalendarEvents } from '../api/calendar.js';
 import { checkNewMusicNotifications } from '../api/notifications.js';
 import { clearHiddenNews as clearRemoteHiddenNews, getHiddenNews } from '../api/preferences.js';
-import { disablePushSubscription, savePushSubscription } from '../api/push.js';
+import {
+  disableAllPushSubscriptions,
+  disablePushSubscription,
+  savePushSubscriptionWithResult,
+} from '../api/push.js';
 import { testSpotifyConnection } from '../api/spotify.js';
 import ArtistAvatar from '../components/ArtistAvatar.jsx';
 import { GOYO_VERSION } from '../config/brand.js';
@@ -25,11 +29,13 @@ import {
   requestNotificationPermission,
 } from '../utils/notifications.js';
 import {
+  getVapidPublicKey,
   getPushSupportDetails,
   getServiceWorkerRegistration,
   isPushSupported,
-  subscribeToPush,
+  refreshPushSubscription,
   unsubscribeFromPush,
+  urlBase64ToUint8Array,
 } from '../utils/webPush.js';
 
 export default function MyPage() {
@@ -64,6 +70,13 @@ export default function MyPage() {
   const safeNotificationSettings = getSafeNotificationSettings(notificationSettings);
   const [notificationPermission, setNotificationPermission] = useState(() => getNotificationPermission());
   const [pushStatusMessage, setPushStatusMessage] = useState('');
+  const [isRefreshingPush, setIsRefreshingPush] = useState(false);
+  const [webPushDebug, setWebPushDebug] = useState({
+    isLoading: false,
+    title: '아직 확인하지 않았어요.',
+    status: 'idle',
+    items: [],
+  });
   const [newMusicTestState, setNewMusicTestState] = useState({
     isLoading: false,
     message: '',
@@ -270,7 +283,7 @@ export default function MyPage() {
 
   const pushReadinessLabel = (() => {
     if (!pushReadiness.hasVapidPublicKey) {
-      return 'VAPID 공개키 없음';
+      return 'VAPID 공개키 없음 (VITE_VAPID_PUBLIC_KEY 미설정)';
     }
 
     if (!pushReadiness.isSecureContext) {
@@ -288,19 +301,320 @@ export default function MyPage() {
     return 'Push 준비됨';
   })();
 
+  const getPermissionBlockedMessage = (permission) => {
+    if (permission === 'denied') {
+      return '브라우저 설정에서 알림 차단을 해제해주세요.';
+    }
+
+    if (permission === 'unsupported') {
+      return '이 브라우저에서는 알림을 지원하지 않아요.';
+    }
+
+    return '알림 권한을 허용해야 푸시를 준비할 수 있어요.';
+  };
+
+  const createDebugRecorder = () => {
+    const debugMap = new Map();
+
+    const record = (label, value) => {
+      const displayValue =
+        value === undefined || value === null || value === ''
+          ? '-'
+          : typeof value === 'boolean'
+            ? value
+              ? '예'
+              : '아니오'
+            : String(value);
+
+      debugMap.set(label, displayValue);
+      console.log('[GOYO Web Push Debug]', label, value);
+      return displayValue;
+    };
+
+    const toItems = () => Array.from(debugMap.entries()).map(([label, value]) => ({ label, value }));
+
+    return { record, toItems };
+  };
+
+  const readSubscriptionDebug = (subscription) => {
+    const json = typeof subscription?.toJSON === 'function' ? subscription.toJSON() : null;
+
+    return {
+      hasSubscription: Boolean(subscription),
+      endpointPrefix: subscription?.endpoint ? subscription.endpoint.slice(0, 50) : '',
+      hasP256dh: Boolean(json?.keys?.p256dh || subscription?.getKey?.('p256dh')),
+      hasAuth: Boolean(json?.keys?.auth || subscription?.getKey?.('auth')),
+    };
+  };
+
+  const collectWebPushDebug = async ({ title = '구독 상태 확인 완료' } = {}) => {
+    const { record, toItems } = createDebugRecorder();
+    const supportDetails = getPushSupportDetails();
+    const vapidPublicKey = getVapidPublicKey();
+
+    record('현재 URL', window.location.href);
+    record('isSecureContext', window.isSecureContext);
+    record('Notification 지원 여부', isNotificationSupported());
+    record('Notification.permission', getNotificationPermission());
+    record('Service Worker 지원 여부', supportDetails.hasServiceWorkerSupport);
+    record('PushManager 지원 여부', supportDetails.hasPushManagerSupport);
+    record('VITE_VAPID_PUBLIC_KEY 존재 여부', Boolean(vapidPublicKey));
+    record('VAPID public key 길이', vapidPublicKey.length);
+    record('anonymousUserId', anonymousUserId);
+    record('x-goyo-anonymous-id 준비 여부', Boolean(anonymousUserId));
+    record('pushManager.subscribe() 성공 여부', '아직 호출 안 함');
+    record('savePushSubscription() 호출 여부', '아직 호출 안 함');
+    record('Supabase insert/upsert 성공 여부', '아직 호출 안 함');
+    record('Supabase error message', '-');
+
+    try {
+      const registration = await getServiceWorkerRegistration();
+      record('Service Worker registration 성공 여부', Boolean(registration));
+      record('Service Worker scope', registration?.scope || '-');
+
+      if (!registration?.pushManager) {
+        record('pushManager.getSubscription() 결과', 'registration 또는 pushManager 없음');
+        record('subscription.endpoint 앞 50자', '-');
+
+        return {
+          title,
+          status: 'warning',
+          items: toItems(),
+        };
+      }
+
+      const subscription = await registration.pushManager.getSubscription();
+      const subscriptionDebug = readSubscriptionDebug(subscription);
+
+      record('pushManager.getSubscription() 결과', subscriptionDebug.hasSubscription ? '구독 있음' : '구독 없음');
+      record('subscription.endpoint 앞 50자', subscriptionDebug.endpointPrefix || '-');
+      record('subscription p256dh 존재 여부', subscriptionDebug.hasP256dh);
+      record('subscription auth 존재 여부', subscriptionDebug.hasAuth);
+
+      return {
+        title,
+        status: 'success',
+        items: toItems(),
+      };
+    } catch (error) {
+      console.error('[GOYO Web Push Debug] status check failed', error);
+      record('Service Worker registration 성공 여부', false);
+      record('실패 원인', error?.message || error);
+
+      return {
+        title: '구독 상태 확인 실패',
+        status: 'error',
+        items: toItems(),
+      };
+    }
+  };
+
+  const handleCheckWebPushDebug = async () => {
+    setWebPushDebug((current) => ({
+      ...current,
+      isLoading: true,
+      title: '구독 상태 확인 중',
+      status: 'loading',
+    }));
+
+    const result = await collectWebPushDebug();
+
+    setWebPushDebug({
+      ...result,
+      isLoading: false,
+    });
+  };
+
+  const handleForceWebPushResubscribe = async () => {
+    const { record, toItems } = createDebugRecorder();
+
+    setWebPushDebug({
+      isLoading: true,
+      title: '강제 재구독 중',
+      status: 'loading',
+      items: [],
+    });
+
+    try {
+      const vapidPublicKey = getVapidPublicKey();
+
+      record('현재 URL', window.location.href);
+      record('isSecureContext', window.isSecureContext);
+      record('Notification 지원 여부', isNotificationSupported());
+      record('Notification.permission', getNotificationPermission());
+      record('Service Worker 지원 여부', 'serviceWorker' in navigator);
+      record('PushManager 지원 여부', 'PushManager' in window);
+      record('VITE_VAPID_PUBLIC_KEY 존재 여부', Boolean(vapidPublicKey));
+      record('VAPID public key 길이', vapidPublicKey.length);
+      record('anonymousUserId', anonymousUserId);
+      record('x-goyo-anonymous-id 준비 여부', Boolean(anonymousUserId));
+      record('pushManager.subscribe() 성공 여부', '아직 호출 안 함');
+      record('savePushSubscription() 호출 여부', '아직 호출 안 함');
+      record('Supabase insert/upsert 성공 여부', '아직 호출 안 함');
+      record('Supabase error message', '-');
+
+      let permission = getNotificationPermission();
+
+      if (permission !== 'granted') {
+        permission = await requestNotificationPermission();
+        setNotificationPermission(permission);
+        record('Notification.permission 요청 후', permission);
+      }
+
+      if (permission !== 'granted') {
+        throw new Error(getPermissionBlockedMessage(permission));
+      }
+
+      if (!vapidPublicKey) {
+        throw new Error('VITE_VAPID_PUBLIC_KEY가 비어 있어요.');
+      }
+
+      const registration = await getServiceWorkerRegistration();
+      record('Service Worker registration 성공 여부', Boolean(registration));
+      record('Service Worker scope', registration?.scope || '-');
+
+      if (!registration?.pushManager) {
+        throw new Error('Service Worker registration 또는 PushManager를 찾을 수 없어요.');
+      }
+
+      const existingSubscription = await registration.pushManager.getSubscription();
+      const existingDebug = readSubscriptionDebug(existingSubscription);
+
+      record('pushManager.getSubscription() 결과', existingDebug.hasSubscription ? '기존 구독 있음' : '기존 구독 없음');
+      record('기존 subscription.endpoint 앞 50자', existingDebug.endpointPrefix || '-');
+
+      if (existingSubscription) {
+        const unsubscribeResult = await existingSubscription.unsubscribe();
+        record('기존 subscription.unsubscribe() 성공 여부', unsubscribeResult);
+      } else {
+        record('기존 subscription.unsubscribe() 성공 여부', '구독 없음');
+      }
+
+      const disableAllResult = await disableAllPushSubscriptions(anonymousUserId);
+      record('Supabase 기존 enabled=false 성공 여부', disableAllResult.ok);
+
+      if (!disableAllResult.ok) {
+        record('Supabase error message', disableAllResult.message);
+        throw new Error(`Supabase 기존 구독 비활성화 실패: ${disableAllResult.message}`);
+      }
+
+      const nextSubscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      });
+      const nextDebug = readSubscriptionDebug(nextSubscription);
+
+      record('pushManager.subscribe() 성공 여부', true);
+      record('subscription.endpoint 앞 50자', nextDebug.endpointPrefix || '-');
+      record('subscription p256dh 존재 여부', nextDebug.hasP256dh);
+      record('subscription auth 존재 여부', nextDebug.hasAuth);
+      record('savePushSubscription() 호출 여부', '예');
+
+      const saveResult = await savePushSubscriptionWithResult(nextSubscription, anonymousUserId);
+      record('Supabase insert/upsert 성공 여부', saveResult.ok);
+      record('Supabase error message', saveResult.ok ? '-' : saveResult.message);
+      record('Supabase subscription id', saveResult.data?.id || '-');
+
+      if (!saveResult.ok) {
+        throw new Error(`Supabase 저장 실패: ${saveResult.message}`);
+      }
+
+      setNotificationSettings((currentSettings) => ({
+        ...getSafeNotificationSettings(currentSettings),
+        enabled: true,
+      }));
+      setPushStatusMessage('강제 재구독 완료');
+      setWebPushDebug({
+        isLoading: false,
+        title: '강제 재구독 완료',
+        status: 'success',
+        items: toItems(),
+      });
+    } catch (error) {
+      console.error('[GOYO Web Push Debug] force resubscribe failed', error);
+      record('실패 원인', error?.message || error);
+      setPushStatusMessage(`강제 재구독 실패: ${error?.message || error}`);
+      setWebPushDebug({
+        isLoading: false,
+        title: '강제 재구독 실패',
+        status: 'error',
+        items: toItems(),
+      });
+    }
+  };
+
+  const renewPushSubscription = async ({ successMessage = '구독 갱신 완료' } = {}) => {
+    if (!isPushSupported()) {
+      const supportDetails = getPushSupportDetails();
+      console.error('Web Push support check failed.', supportDetails);
+
+      return {
+        ok: false,
+        message: !supportDetails.hasVapidPublicKey
+          ? '구독 생성 실패: VITE_VAPID_PUBLIC_KEY가 없어요.'
+          : !supportDetails.isSecureContext
+            ? '구독 생성 실패: HTTPS 환경이 필요해요.'
+            : '구독 생성 실패: 이 브라우저는 Web Push를 지원하지 않아요.',
+      };
+    }
+
+    setIsRefreshingPush(true);
+
+    try {
+      const refreshResult = await refreshPushSubscription({
+        beforeSubscribe: async ({ previousEndpoint }) => {
+          const disableAllResult = await disableAllPushSubscriptions(anonymousUserId);
+
+          if (!disableAllResult.ok) {
+            throw new Error(`Supabase 기존 구독 비활성화 실패: ${disableAllResult.message}`);
+          }
+
+          if (previousEndpoint) {
+            await disablePushSubscription(previousEndpoint, anonymousUserId);
+          }
+        },
+      });
+
+      if (!refreshResult.ok || !refreshResult.subscription) {
+        return {
+          ok: false,
+          message: `구독 생성 실패: ${refreshResult.message}`,
+        };
+      }
+
+      const saveResult = await savePushSubscriptionWithResult(refreshResult.subscription, anonymousUserId);
+
+      if (!saveResult.ok) {
+        return {
+          ok: false,
+          message: `Supabase 저장 실패: ${saveResult.message}`,
+        };
+      }
+
+      return {
+        ok: true,
+        message: successMessage,
+        previousEndpoint: refreshResult.previousEndpoint,
+        endpoint: saveResult.endpoint,
+      };
+    } catch (error) {
+      console.error('Push subscription renewal failed.', error);
+
+      return {
+        ok: false,
+        message: error?.message || '구독 갱신에 실패했어요.',
+      };
+    } finally {
+      setIsRefreshingPush(false);
+    }
+  };
+
   const requestAndEnableNotifications = async () => {
     const permission = await requestNotificationPermission();
     setNotificationPermission(permission);
 
     if (permission !== 'granted') {
-      const nextMessage =
-        permission === 'denied'
-          ? '브라우저 설정에서 알림 차단을 해제해주세요.'
-          : permission === 'unsupported'
-            ? '이 브라우저에서는 알림을 지원하지 않아요.'
-            : '알림 권한을 허용해야 푸시를 준비할 수 있어요.';
-
-      setPushStatusMessage(nextMessage);
+      setPushStatusMessage(getPermissionBlockedMessage(permission));
       setNotificationSettings((currentSettings) => ({
         ...getSafeNotificationSettings(currentSettings),
         enabled: false,
@@ -308,39 +622,30 @@ export default function MyPage() {
       return;
     }
 
-    let nextPushStatusMessage = '로컬 알림이 켜졌어요.';
+    const renewResult = await renewPushSubscription({
+      successMessage: 'Web Push 구독이 저장됐어요.',
+    });
 
-    if (isPushSupported()) {
-      const subscription = await subscribeToPush({ forceRefresh: true });
-      const savedSubscription = await savePushSubscription(subscription, anonymousUserId);
-
-      if (savedSubscription) {
-        nextPushStatusMessage = 'Web Push 구독이 저장됐어요.';
-      } else if (subscription) {
-        nextPushStatusMessage = '구독 저장 실패, 로컬 알림만 사용해요.';
-      } else {
-        nextPushStatusMessage = 'Web Push 구독을 만들 수 없어 로컬 알림만 사용해요.';
-      }
-    } else {
-      nextPushStatusMessage = 'Web Push 준비 조건이 부족해 로컬 알림만 사용해요.';
-      console.error('Web Push support check failed.', getPushSupportDetails());
-    }
-
-    setPushStatusMessage(nextPushStatusMessage);
+    setPushStatusMessage(renewResult.message);
     setNotificationSettings((currentSettings) => ({
       ...getSafeNotificationSettings(currentSettings),
-      enabled: true,
+      enabled: renewResult.ok,
     }));
   };
 
   const disableNotifications = async () => {
     const unsubscribedSubscription = await unsubscribeFromPush();
+    const disableAllResult = await disableAllPushSubscriptions(anonymousUserId);
 
     if (unsubscribedSubscription?.endpoint) {
       await disablePushSubscription(unsubscribedSubscription.endpoint, anonymousUserId);
     }
 
-    setPushStatusMessage('알림이 꺼졌어요.');
+    setPushStatusMessage(
+      disableAllResult.ok
+        ? '알림이 꺼졌어요. 브라우저 구독과 서버 구독을 정리했어요.'
+        : `알림은 꺼졌지만 서버 구독 정리에 실패했어요: ${disableAllResult.message}`,
+    );
     setNotificationSettings((currentSettings) => ({
       ...getSafeNotificationSettings(currentSettings),
       enabled: false,
@@ -373,6 +678,33 @@ export default function MyPage() {
       ...getSafeNotificationSettings(currentSettings),
       [key]: value,
     }));
+  };
+
+  const handleRefreshPushSubscription = async () => {
+    let permission = getNotificationPermission();
+
+    if (permission !== 'granted') {
+      permission = await requestNotificationPermission();
+      setNotificationPermission(permission);
+    }
+
+    if (permission !== 'granted') {
+      setPushStatusMessage(getPermissionBlockedMessage(permission));
+      return;
+    }
+
+    const renewResult = await renewPushSubscription({
+      successMessage: '구독 갱신 완료',
+    });
+
+    setPushStatusMessage(renewResult.message);
+
+    if (renewResult.ok) {
+      setNotificationSettings((currentSettings) => ({
+        ...getSafeNotificationSettings(currentSettings),
+        enabled: true,
+      }));
+    }
   };
 
   const getNotificationDebugText = (result) => {
@@ -577,6 +909,49 @@ export default function MyPage() {
         </div>
 
         {pushStatusMessage && <p className="notification-push-status">{pushStatusMessage}</p>}
+
+        <div className="notification-refresh-actions">
+          <button
+            className="notification-refresh-button"
+            type="button"
+            disabled={isRefreshingPush || notificationPermission === 'denied'}
+            onClick={handleRefreshPushSubscription}
+          >
+            {isRefreshingPush ? '갱신 중...' : '구독 갱신'}
+          </button>
+          <small>만료된 푸시 구독은 갱신하면 새 구독으로 다시 저장돼요.</small>
+        </div>
+
+        {/* Development-only Web Push diagnostics. Hide this block before a public launch if needed. */}
+        <div className={`web-push-debug-panel is-${webPushDebug.status}`}>
+          <div className="web-push-debug-header">
+            <div>
+              <strong>Web Push Debug</strong>
+              <small>{webPushDebug.title}</small>
+            </div>
+            <span>{webPushDebug.isLoading ? '확인 중' : 'DEV'}</span>
+          </div>
+
+          <div className="web-push-debug-actions">
+            <button type="button" disabled={webPushDebug.isLoading} onClick={handleCheckWebPushDebug}>
+              구독 상태 확인
+            </button>
+            <button type="button" disabled={webPushDebug.isLoading} onClick={handleForceWebPushResubscribe}>
+              강제 재구독
+            </button>
+          </div>
+
+          {webPushDebug.items.length > 0 && (
+            <dl className="web-push-debug-list">
+              {webPushDebug.items.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
 
         <div className="notification-dev-test">
           <button

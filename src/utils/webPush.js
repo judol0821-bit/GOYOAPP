@@ -190,6 +190,119 @@ export const subscribeToPush = async ({ forceRefresh = false } = {}) => {
   }
 };
 
+export const refreshPushSubscription = async ({ beforeSubscribe } = {}) => {
+  if (!isPushSupported()) {
+    const supportDetails = getPushSupportDetails();
+    console.error('Web Push refresh skipped: required support is missing.', supportDetails);
+
+    return {
+      ok: false,
+      subscription: null,
+      previousEndpoint: '',
+      hadExistingSubscription: false,
+      unsubscribedExisting: false,
+      message: !supportDetails.hasVapidPublicKey
+        ? 'VITE_VAPID_PUBLIC_KEY가 설정되지 않았어요.'
+        : !supportDetails.isSecureContext
+          ? 'HTTPS 또는 localhost에서만 Web Push를 사용할 수 있어요.'
+          : '이 브라우저에서는 Web Push를 사용할 수 없어요.',
+      details: supportDetails,
+    };
+  }
+
+  try {
+    const registration = await getServiceWorkerRegistration();
+
+    if (!registration?.pushManager) {
+      return {
+        ok: false,
+        subscription: null,
+        previousEndpoint: '',
+        hadExistingSubscription: false,
+        unsubscribedExisting: false,
+        message: 'Service Worker 또는 PushManager를 찾을 수 없어요.',
+      };
+    }
+
+    const currentPublicKey = getVapidPublicKey();
+    const existingSubscription = await registration.pushManager.getSubscription();
+    const previousEndpoint = existingSubscription?.endpoint || '';
+    let unsubscribedExisting = false;
+
+    if (existingSubscription) {
+      console.log('Refreshing Web Push subscription: existing subscription found.', {
+        endpointPrefix: previousEndpoint.slice(0, 40),
+        hasStoredVapidPublicKey: Boolean(readStoredVapidPublicKey()),
+        hasSubscriptionApplicationServerKey: Boolean(getSubscriptionApplicationServerKey(existingSubscription)),
+      });
+
+      unsubscribedExisting = await existingSubscription.unsubscribe();
+      writeStoredVapidPublicKey('');
+    }
+
+    const remainingSubscription = await registration.pushManager.getSubscription();
+
+    if (remainingSubscription) {
+      console.error('Web Push refresh failed: existing subscription is still active after unsubscribe.', {
+        endpointPrefix: remainingSubscription.endpoint?.slice(0, 40),
+        unsubscribedExisting,
+      });
+
+      return {
+        ok: false,
+        subscription: null,
+        previousEndpoint,
+        hadExistingSubscription: Boolean(existingSubscription),
+        unsubscribedExisting,
+        message: '기존 브라우저 구독을 해제하지 못했어요.',
+      };
+    }
+
+    if (typeof beforeSubscribe === 'function') {
+      await beforeSubscribe({
+        previousEndpoint,
+        hadExistingSubscription: Boolean(existingSubscription),
+        unsubscribedExisting,
+      });
+    }
+
+    const nextSubscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(currentPublicKey),
+    });
+
+    writeStoredVapidPublicKey(currentPublicKey);
+
+    console.log('Web Push subscription refreshed.', {
+      previousEndpointPrefix: previousEndpoint.slice(0, 40),
+      nextEndpointPrefix: nextSubscription.endpoint?.slice(0, 40),
+      hadExistingSubscription: Boolean(existingSubscription),
+      unsubscribedExisting,
+    });
+
+    return {
+      ok: true,
+      subscription: nextSubscription,
+      previousEndpoint,
+      hadExistingSubscription: Boolean(existingSubscription),
+      unsubscribedExisting,
+      message: '구독 갱신 완료',
+    };
+  } catch (error) {
+    console.error('Failed to refresh Web Push subscription.', error);
+
+    return {
+      ok: false,
+      subscription: null,
+      previousEndpoint: '',
+      hadExistingSubscription: false,
+      unsubscribedExisting: false,
+      message: error?.message || 'Web Push 구독 갱신에 실패했어요.',
+      error,
+    };
+  }
+};
+
 export const unsubscribeFromPush = async () => {
   if (!hasServiceWorkerSupport() || !hasPushManagerSupport()) {
     return null;

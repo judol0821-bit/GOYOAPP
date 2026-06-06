@@ -5245,6 +5245,126 @@ button:disabled:active {
   line-height: 1.45;
 }
 
+.notification-refresh-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.notification-refresh-button {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--wire-border);
+  border-radius: 14px;
+  background: var(--wire-app-bg);
+  color: var(--wire-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notification-refresh-button:disabled {
+  color: var(--wire-tertiary);
+  opacity: 0.6;
+}
+
+.notification-refresh-actions small {
+  color: var(--wire-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.web-push-debug-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--wire-border);
+  border-radius: 16px;
+  background: #fafafa;
+}
+
+.web-push-debug-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.web-push-debug-header div {
+  display: grid;
+  gap: 2px;
+}
+
+.web-push-debug-header strong {
+  color: var(--wire-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.web-push-debug-header small,
+.web-push-debug-header span {
+  color: var(--wire-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.web-push-debug-header span {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.web-push-debug-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.web-push-debug-actions button {
+  min-height: 38px;
+  border: 1px solid var(--wire-border);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--wire-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.web-push-debug-actions button:disabled {
+  color: var(--wire-tertiary);
+  opacity: 0.6;
+}
+
+.web-push-debug-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.web-push-debug-list div {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #ededf2;
+}
+
+.web-push-debug-list dt,
+.web-push-debug-list dd {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.web-push-debug-list dt {
+  color: var(--wire-tertiary);
+}
+
+.web-push-debug-list dd {
+  color: var(--wire-text);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .notification-dev-test {
   display: grid;
   gap: 8px;

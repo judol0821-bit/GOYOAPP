@@ -47,16 +47,25 @@ export const getPushSubscription = async () => {
   }
 };
 
-export const savePushSubscription = async (subscription, anonymousUserId) => {
+export const savePushSubscriptionWithResult = async (subscription, anonymousUserId) => {
   const serializedSubscription = serializeSubscription(subscription);
 
   if (!serializedSubscription || !anonymousUserId || !isSupabaseConfigured()) {
-    console.error('Push subscription save skipped: missing subscription, anonymous user id, or Supabase config.', {
+    const details = {
       hasSerializedSubscription: Boolean(serializedSubscription),
       hasAnonymousUserId: Boolean(anonymousUserId),
       isSupabaseConfigured: isSupabaseConfigured(),
-    });
-    return null;
+    };
+
+    console.error('Push subscription save skipped: missing subscription, anonymous user id, or Supabase config.', details);
+
+    return {
+      ok: false,
+      data: null,
+      endpoint: serializedSubscription?.endpoint || '',
+      message: '구독 정보, 사용자 ID 또는 Supabase 설정이 부족해요.',
+      details,
+    };
   }
 
   try {
@@ -96,10 +105,66 @@ export const savePushSubscription = async (subscription, anonymousUserId) => {
       console.error('Failed to disable old push subscriptions.', disableOldError);
     }
 
-    return data;
+    return {
+      ok: true,
+      data,
+      endpoint: serializedSubscription.endpoint,
+      message: 'Push subscription saved.',
+      disabledOld: !disableOldError,
+    };
   } catch (error) {
     console.error('Failed to save push subscription.', error);
-    return null;
+
+    return {
+      ok: false,
+      data: null,
+      endpoint: serializedSubscription.endpoint,
+      message: error?.message || 'Supabase에 구독을 저장하지 못했어요.',
+      error,
+    };
+  }
+};
+
+export const savePushSubscription = async (subscription, anonymousUserId) => {
+  const result = await savePushSubscriptionWithResult(subscription, anonymousUserId);
+  return result.ok ? result.data : null;
+};
+
+export const disableAllPushSubscriptions = async (anonymousUserId) => {
+  if (!anonymousUserId || !isSupabaseConfigured()) {
+    return {
+      ok: false,
+      message: '사용자 ID 또는 Supabase 설정이 부족해요.',
+    };
+  }
+
+  try {
+    const client = getSupabaseClient(anonymousUserId);
+    const { error } = await client
+      .from('push_subscriptions')
+      .update({
+        enabled: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('anonymous_user_id', anonymousUserId)
+      .eq('enabled', true);
+
+    if (error) {
+      throw error;
+    }
+
+    return {
+      ok: true,
+      message: '기존 enabled 구독을 비활성화했어요.',
+    };
+  } catch (error) {
+    console.error('Failed to disable all push subscriptions.', error);
+
+    return {
+      ok: false,
+      message: error?.message || '기존 구독 비활성화에 실패했어요.',
+      error,
+    };
   }
 };
 

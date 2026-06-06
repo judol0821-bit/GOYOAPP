@@ -330,7 +330,7 @@ export async function testSpotifyConnection() {
       enabled: false,
       ok: false,
       status: 'disabled',
-      message: 'Spotify 비활성화',
+      message: 'Spotify 비활성화 (Supabase 미설정)',
       reason: 'supabase_not_configured',
     };
   }
