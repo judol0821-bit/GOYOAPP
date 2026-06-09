@@ -11,6 +11,10 @@ export default defineConfig({
       includeAssets: [
         'goyo-icon.svg',
         'manifest.webmanifest',
+        'icons/icon-192.png',
+        'icons/icon-512.png',
+        'icons/maskable-icon-512.png',
+        'icons/apple-touch-icon.png',
         'branding/app-icon/icon-192.png',
         'branding/app-icon/icon-512.png',
         'branding/app-icon/maskable-icon-512.png',

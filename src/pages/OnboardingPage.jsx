@@ -141,7 +141,7 @@ export default function OnboardingPage() {
 
       <section className="artist-section" aria-label="artist list">
         <div className="artist-section-header">
-          <h2>아티스트</h2>
+          <h2>{hasQuery ? '검색 결과' : '아티스트'}</h2>
           <span>{selectedArtistIds.length}명 선택</span>
         </div>
 

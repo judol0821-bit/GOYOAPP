@@ -24,11 +24,19 @@ export default function useArtistSearch(query, options = {}) {
       return undefined;
     }
 
-    setSearchState((currentState) => ({
-      ...currentState,
-      error: null,
-      status: 'loading',
-    }));
+    if (!normalizedQuery) {
+      setSearchState({
+        error: null,
+        results: [],
+        status: 'idle',
+      });
+    } else {
+      setSearchState((currentState) => ({
+        ...currentState,
+        error: null,
+        status: 'loading',
+      }));
+    }
 
     const timeoutId = window.setTimeout(async () => {
       try {

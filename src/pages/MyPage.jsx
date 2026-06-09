@@ -81,6 +81,10 @@ export default function MyPage() {
     message: '',
     status: 'idle',
   });
+  const [isDebugMode] = useState(() => {
+    return window.localStorage.getItem('goyoDebug') === 'true'
+      || import.meta.env.VITE_GOYO_DEBUG_UI === 'true';
+  });
   const [pushReadiness, setPushReadiness] = useState(() => ({
     ...getPushSupportDetails(),
     hasServiceWorkerRegistration: false,
@@ -171,6 +175,10 @@ export default function MyPage() {
   useEffect(() => {
     let isCancelled = false;
 
+    if (!isDebugMode) {
+      return undefined;
+    }
+
     if (!isOnline) {
       setSupabaseStatus({
         message: '오프라인 모드',
@@ -198,7 +206,7 @@ export default function MyPage() {
     return () => {
       isCancelled = true;
     };
-  }, [isOnline]);
+  }, [isDebugMode, isOnline]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -891,7 +899,7 @@ export default function MyPage() {
                 {isNotificationSupported()
                   ? notificationPermission === 'denied'
                     ? '브라우저 설정에서 알림 차단을 해제해주세요.'
-                    : '새 음악과 일정 소식을 조용히 알려드려요.'
+                    : '좋아하는 아티스트의 새 소식을 조용히 알려드려요.'
                   : '이 브라우저는 알림을 지원하지 않아요.'}
               </small>
             </span>
@@ -922,74 +930,82 @@ export default function MyPage() {
           ))}
         </div>
 
-        <div className="notification-permission-status" aria-label="notification permission status">
-          <span>알림 권한: {notificationPermissionLabel}</span>
-          <span>{isNotificationSecureContext() ? 'HTTPS/localhost 확인됨' : 'HTTPS 또는 localhost 필요'}</span>
-          <span>{pushReadinessLabel}</span>
-          <span>VAPID 오류가 보이면 알림을 OFF 후 ON 해주세요.</span>
-        </div>
+        {isDebugMode && (
+          <div className="notification-permission-status" aria-label="notification permission status">
+            <span>알림 권한: {notificationPermissionLabel}</span>
+            <span>{isNotificationSecureContext() ? 'HTTPS/localhost 확인됨' : 'HTTPS 또는 localhost 필요'}</span>
+            <span>{pushReadinessLabel}</span>
+            <span>VAPID 오류가 보이면 알림을 OFF 후 ON 해주세요.</span>
+          </div>
+        )}
 
         {pushStatusMessage && <p className="notification-push-status">{pushStatusMessage}</p>}
 
-        <div className="notification-refresh-actions">
-          <button
-            className="notification-refresh-button"
-            type="button"
-            disabled={isRefreshingPush || notificationPermission === 'denied'}
-            onClick={handleRefreshPushSubscription}
-          >
-            {isRefreshingPush ? '갱신 중...' : '구독 갱신'}
-          </button>
-          <small>만료된 푸시 구독은 갱신하면 새 구독으로 다시 저장돼요.</small>
-        </div>
+        {isDebugMode && (
+          <div className="notification-refresh-actions">
+            <button
+              className="notification-refresh-button"
+              type="button"
+              disabled={isRefreshingPush || notificationPermission === 'denied'}
+              onClick={handleRefreshPushSubscription}
+            >
+              {isRefreshingPush ? '갱신 중...' : '구독 갱신'}
+            </button>
+            <small>만료된 푸시 구독은 갱신하면 새 구독으로 다시 저장돼요.</small>
+          </div>
+        )}
 
-        {/* Development-only Web Push diagnostics. Hide this block before a public launch if needed. */}
-        <div className={`web-push-debug-panel is-${webPushDebug.status}`}>
-          <div className="web-push-debug-header">
-            <div>
-              <strong>Web Push Debug</strong>
-              <small>{webPushDebug.title}</small>
+        {/* Development-only diagnostics: shown only when localStorage.goyoDebug is "true". */}
+        {isDebugMode && (
+          <div className={`web-push-debug-panel is-${webPushDebug.status}`}>
+            <div className="web-push-debug-header">
+              <div>
+                <strong>Web Push Debug</strong>
+                <small>{webPushDebug.title}</small>
+              </div>
+              <span>{webPushDebug.isLoading ? '확인 중' : 'DEV'}</span>
             </div>
-            <span>{webPushDebug.isLoading ? '확인 중' : 'DEV'}</span>
+
+            <div className="web-push-debug-actions">
+              <button type="button" disabled={webPushDebug.isLoading} onClick={handleCheckWebPushDebug}>
+                구독 상태 확인
+              </button>
+              <button type="button" disabled={webPushDebug.isLoading} onClick={handleForceWebPushResubscribe}>
+                강제 재구독
+              </button>
+            </div>
+
+            {webPushDebug.items.length > 0 && (
+              <dl className="web-push-debug-list">
+                {webPushDebug.items.map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
           </div>
+        )}
 
-          <div className="web-push-debug-actions">
-            <button type="button" disabled={webPushDebug.isLoading} onClick={handleCheckWebPushDebug}>
-              구독 상태 확인
+        {isDebugMode && (
+          <div className="notification-dev-test">
+            <button
+              className="my-primary-button"
+              type="button"
+              disabled={newMusicTestState.isLoading}
+              onClick={handleNewMusicNotificationTest}
+            >
+              {newMusicTestState.isLoading ? '확인 중...' : '새 음악 알림 테스트'}
             </button>
-            <button type="button" disabled={webPushDebug.isLoading} onClick={handleForceWebPushResubscribe}>
-              강제 재구독
-            </button>
+            <small>개발용 버튼이에요. 출시 전 숨길 수 있도록 분리해두었어요.</small>
+            {newMusicTestState.message && (
+              <p className={`notification-test-status is-${newMusicTestState.status}`}>
+                {newMusicTestState.message}
+              </p>
+            )}
           </div>
-
-          {webPushDebug.items.length > 0 && (
-            <dl className="web-push-debug-list">
-              {webPushDebug.items.map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd>{item.value}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-        </div>
-
-        <div className="notification-dev-test">
-          <button
-            className="my-primary-button"
-            type="button"
-            disabled={newMusicTestState.isLoading}
-            onClick={handleNewMusicNotificationTest}
-          >
-            {newMusicTestState.isLoading ? '확인 중...' : '새 음악 알림 테스트'}
-          </button>
-          <small>개발용 버튼이에요. 출시 전 숨길 수 있도록 분리해두었어요.</small>
-          {newMusicTestState.message && (
-            <p className={`notification-test-status is-${newMusicTestState.status}`}>
-              {newMusicTestState.message}
-            </p>
-          )}
-        </div>
+        )}
       </section>
 
       <section className="my-section" aria-label="followed artists">
@@ -1038,9 +1054,11 @@ export default function MyPage() {
 
       <p className="my-version-label">GOYO v{GOYO_VERSION}</p>
 
-      <p className={`my-supabase-status is-${isOnline ? supabaseStatus.status : 'offline'}`}>
-        {isOnline ? `${supabaseStatus.message} / ${spotifyStatus.message}` : '오프라인 모드'}
-      </p>
+      {isDebugMode && (
+        <p className={`my-supabase-status is-${isOnline ? supabaseStatus.status : 'offline'}`}>
+          {isOnline ? `${supabaseStatus.message} / ${spotifyStatus.message}` : '오프라인 모드'}
+        </p>
+      )}
     </main>
   );
 }
